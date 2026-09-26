@@ -8,8 +8,11 @@ import { FullPageLoader } from "@/components/layout/full-page-loader"
  * Gates the console on two things, in order:
  *
  *   1. Authentication, via Convex Auth.
- *   2. Data readiness. Screens call `useData()`, which throws if the query
- *      batch has not resolved — so the shell must not mount them early.
+ *   2. Identity and shell readiness. `useCurrentUser()` throws if the `me` query
+ *      has not resolved, so the shell must not mount screens early.
+ *
+ * Per-screen read models load after this point and each screen shows its own
+ * loader — see `components/shared/read-model.tsx`.
  *
  * Routing itself happens in `App.tsx`; this component only decides whether the
  * console is allowed to paint.

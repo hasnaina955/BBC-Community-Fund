@@ -17,12 +17,11 @@ import {
   Wallet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useData } from "@/data/store"
-import { collectionStats, defaulters, fundSummaries } from "@/lib/selectors"
-import { CURRENT_MONTH, CURRENT_YEAR, MONTHS_ELAPSED } from "@/data/period"
+import { useCurrentUser, useShell } from "@/data/store"
 import { Button } from "@/components/ui/button"
 import { formatPaiseCompact } from "@/lib/format"
 import { Avatar } from "@/components/ui/avatar"
+import { ErrorBoundary } from "@/components/layout/error-boundary"
 
 /**
  * App shell. The sidebar palette comes from the recovered `--sidebar-*` tokens,
@@ -61,7 +60,11 @@ function useTheme() {
 }
 
 export function AppShell() {
-  const data = useData()
+  const me = useCurrentUser()
+  // The shell read model: org totals, the arrears count (fixed_monthly funds
+  // only) and the pending-approval badge. Computed on the server, so this is a
+  // few hundred bytes rather than the whole ledger.
+  const shell = useShell()
   const location = useLocation()
   const navigate = useNavigate()
   const { dark, toggle } = useTheme()
@@ -74,22 +77,8 @@ export function AppShell() {
     navigate("/auth", { replace: true })
   }
 
-  const isAdmin = data.currentUser.role === "admin"
-  const pendingCount = data.transactions.filter(
-    (t) => t.status === "pending",
-  ).length
-
-  const stats = collectionStats(data.contributions, CURRENT_YEAR, CURRENT_MONTH)
-  const defaulterCount = defaulters(
-    data.contributions,
-    data.members,
-    CURRENT_YEAR,
-    MONTHS_ELAPSED,
-  ).length
-  const totalBalance = fundSummaries(data.ledgerEntries, data.funds).reduce(
-    (acc, f) => acc + f.balancePaise,
-    0,
-  )
+  const isAdmin = me.role === "admin"
+  const pendingCount = shell.pendingCount
 
   const renderNav = (
     items: readonly {
@@ -170,24 +159,23 @@ export function AppShell() {
               Total across funds
             </p>
             <p className="tabular text-lg font-semibold text-sidebar-foreground">
-              {formatPaiseCompact(totalBalance)}
+              {formatPaiseCompact(shell.totalBalance)}
             </p>
             <p className="text-[11px] text-sidebar-foreground/55">
-              {stats.collectionRate.toFixed(0)}% collected this month
+              {shell.memberCount} members · {shell.funds.length} funds
             </p>
           </div>
 
           <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
             <Avatar
-              name={data.currentUser.name}
+              name={me.name}
               className="size-8 bg-sidebar-accent text-xs text-sidebar-accent-foreground"
             />
             <div className="min-w-0 flex-1 leading-tight">                <p className="truncate text-xs font-medium text-sidebar-foreground">
-                  {data.currentUser.name}
+                  {me.name}
                 </p>
                 <p className="truncate text-[11px] capitalize text-sidebar-foreground/55">
-                  {data.currentUser.role.replace("_", " ")} ·{" "}
-                  {data.currentUser.orgName}
+                  {me.role.replace("_", " ")} · {me.orgName}
                 </p>
             </div>
             <button
@@ -220,7 +208,7 @@ export function AppShell() {
           <p className="text-sm font-semibold">CommunityFund</p>
           <div className="ml-auto flex items-center gap-2">
             <span className="tabular hidden text-xs text-muted-foreground sm:inline">
-              {defaulterCount} in arrears
+              {shell.arrearsCount} in arrears
             </span>
             <button
               onClick={toggle}
@@ -243,7 +231,14 @@ export function AppShell() {
 
         <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8" key={location.pathname}>
           <div className="mx-auto w-full max-w-7xl space-y-6">
-            <Outlet />
+            {/*
+              A screen's read model can fail — a fund id that no longer resolves,
+              a year with nothing in it. Convex's `useQuery` rethrows, so without
+              this the failure would take the sidebar and the header with it.
+            */}
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>

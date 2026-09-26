@@ -3,7 +3,7 @@ import { v } from "convex/values"
 import { requireTreasurer } from "./lib/authz"
 import { recordAudit, AUDIT } from "./lib/audit"
 import { assertPositive, assertPaise } from "./lib/money"
-import { fundType } from "./schema"
+import { fundType, collectionMode } from "./schema"
 
 /**
  * Fund and bank mutations.
@@ -17,6 +17,7 @@ export const createFund = mutation({
   args: {
     name: v.string(),
     type: fundType,
+    collectionMode: collectionMode,
     description: v.optional(v.string()),
     bankId: v.optional(v.id("banks")),
     managerId: v.optional(v.id("users")),
@@ -36,6 +37,13 @@ export const createFund = mutation({
       assertPaise(args.monthlyAmountPaise, "Monthly amount")
     }
 
+    // A fund that collects a fixed amount per member must say what it is,
+    // otherwise the grid and arrears have nothing to work from.
+    if (args.collectionMode === "fixed_monthly" && !args.monthlyAmountPaise) {
+      throw new Error(
+        "A fixed_monthly fund needs a monthly amount per member",
+      )
+    }
     if (args.bankId) {
       const bank = await ctx.db.get(args.bankId)
       if (!bank || bank.orgId !== actor.orgId) throw new Error("Unknown bank account")
@@ -45,12 +53,13 @@ export const createFund = mutation({
       if (!manager || manager.orgId !== actor.orgId) throw new Error("Unknown manager")
     }
 
-    const isMemberContribution = (args.monthlyAmountPaise ?? 0) > 0
+    const isMemberContribution = args.collectionMode === "fixed_monthly"
 
     const id = await ctx.db.insert("funds", {
       orgId: actor.orgId,
       name,
       type: args.type,
+      collectionMode: args.collectionMode,
       description: args.description?.trim() || undefined,
       bankId: args.bankId,
       managerId: args.managerId,
@@ -83,6 +92,7 @@ export const updateFund = mutation({
     managerId: v.optional(v.id("users")),
     targetAmountPaise: v.optional(v.number()),
     isActive: v.optional(v.boolean()),
+    collectionMode: v.optional(collectionMode),
   },
   handler: async (ctx, args) => {
     const actor = await requireTreasurer(ctx)
@@ -108,6 +118,12 @@ export const updateFund = mutation({
       patch.targetAmountPaise = args.targetAmountPaise
     }
     if (args.isActive !== undefined) patch.isActive = args.isActive
+    if (args.collectionMode !== undefined) {
+      patch.collectionMode = args.collectionMode
+      // Switching to a periodic fund needs an amount to charge, and switching
+      // away from one means the old flag is meaningless.
+      patch.isMemberContribution = args.collectionMode === "fixed_monthly"
+    }
 
     await ctx.db.patch(args.fundId, patch)
 

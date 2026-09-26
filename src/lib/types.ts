@@ -38,6 +38,22 @@ export type TransactionStatus =
 
 export type ContributionStatus = "due" | "paid" | "partial" | "waived"
 
+/**
+ * How a fund is collected. This is the field the whole arrears concept hangs
+ * off: only `fixed_monthly` funds create dues, so only they can have arrears,
+ * waivers or a collection grid. The server enforces it (see convex/lib/funds.ts)
+ * and the UI renders accordingly.
+ */
+export type CollectionMode =
+  /** A set amount every member owes every month. Dues, arrears, waivers. */
+  | "fixed_monthly"
+  /** Anything, whenever — the Friday fund. Never arrears. */
+  | "voluntary"
+  /** A promise precedes payment, e.g. the mosque reconstruction. */
+  | "pledge_based"
+  /** Zakat, charity, emergency: given and spent, no obligation attached. */
+  | "donation"
+
 export type PaymentMethod = "cash" | "cheque" | "upi" | "card" | "transfer"
 
 export type Role = "admin" | "treasurer" | "fund_manager" | "viewer" | "member"
@@ -165,6 +181,25 @@ export interface AuditEntry {
   entityId: string | null
   details: string | null
   createdAt: string
+}
+
+export const COLLECTION_MODE_LABELS: Record<CollectionMode, string> = {
+  fixed_monthly: "Monthly dues",
+  voluntary: "Voluntary",
+  pledge_based: "Pledge",
+  donation: "Donation",
+}
+
+/** One line explaining what a mode means, shown in the fund editor. */
+export const COLLECTION_MODE_HINTS: Record<CollectionMode, string> = {
+  fixed_monthly:
+    "Every active member owes a fixed amount each month. This is the only mode that produces arrears, waivers and the collection grid.",
+  voluntary:
+    "Members give whatever they can, whenever they can — typically at the Friday collection. Nobody is ever in arrears.",
+  pledge_based:
+    "Members promise an amount and pay it over time. Outstanding promises are tracked, but they are not monthly dues.",
+  donation:
+    "Zakat, charity and emergency giving. Money in, money out, with no obligation attached to any member.",
 }
 
 export const FUND_TYPE_LABELS: Record<FundType, string> = {

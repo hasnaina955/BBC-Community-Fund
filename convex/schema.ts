@@ -26,6 +26,27 @@ export const role = v.union(
   v.literal("member"),
 )
 
+/**
+ * How a fund is collected. This is the field that stops the app from treating
+ * every fund as a monthly levy.
+ *
+ *   fixed_monthly  every active member owes a fixed amount each period.
+ *                  Only this mode has dues, arrears, waivers, a grid, and
+ *                  reminders.
+ *   voluntary      anyone may give any amount at any time. Nobody owes it, so
+ *                  arrears are meaningless — a member who never gives is not a
+ *                  defaulter. Anonymous givers are allowed.
+ *   pledge_based   money is promised first and paid later (a building project).
+ *                  Promises are chased; there is no periodic due.
+ *   donation       one-off gifts with no schedule and no member expectation.
+ */
+export const collectionMode = v.union(
+  v.literal("fixed_monthly"),
+  v.literal("voluntary"),
+  v.literal("pledge_based"),
+  v.literal("donation"),
+)
+
 export const fundType = v.union(
   v.literal("general"),
   v.literal("zakat"),
@@ -91,23 +112,72 @@ export default defineSchema({
     ifscCode: v.optional(v.string()),
     notes: v.optional(v.string()),
     createdAt: v.number(),
-  }).index("by_org", ["orgId"]),
-
-  funds: defineTable({
+  }).index("by_org", ["orgId"]),  funds: defineTable({
     orgId: v.id("organizations"),
     name: v.string(),
     type: fundType,
+    /**
+     * Optional only so rows written before this field existed still validate.
+     * Reads normalise a missing value to "fixed_monthly" via `modeOf()` in
+     * lib/funds.ts. Once real data is loaded this can become required.
+     */
+    collectionMode: v.optional(collectionMode),
     description: v.optional(v.string()),
     bankId: v.optional(v.id("banks")),
     managerId: v.optional(v.id("users")),
     targetAmountPaise: v.optional(money),
     isActive: v.boolean(),
+    /**
+     * @deprecated Kept only for the old demo seed. `collectionMode` is the real
+     * discriminator now.
+     */
     isMemberContribution: v.boolean(),
     monthlyAmountPaise: v.optional(money),
-    createdAt: v.number(),  })
+    createdAt: v.number(),
+  })
     .index("by_org", ["orgId"])
     .index("by_org_manager", ["orgId", "managerId"])
     .index("by_org_bank", ["orgId", "bankId"]),
+
+  /**
+   * A dated collection session for a fund that has no schedule — e.g. one row
+   * per Friday for the voluntary fund. Gives the receipt book a unit to hang
+   * off, and lets a session be totalled ("Friday 12 Sep: Rs 4,200 from 7").
+   */
+  collectionRounds: defineTable({
+    orgId: v.id("organizations"),
+    fundId: v.id("funds"),
+    date: v.string(),
+    label: v.string(),
+    note: v.optional(v.string()),
+    collectedBy: v.optional(v.id("users")),
+    createdAt: v.number(),
+  })
+    .index("by_org_fund_date", ["orgId", "fundId", "date"])
+    .index("by_org", ["orgId"]),
+
+  /**
+   * Money promised to a fund before it is received — a reconstruction pledge.
+   * This is a promise, not a periodic due, which is why it is its own table
+   * rather than a contribution row.
+   */
+  pledges: defineTable({
+    orgId: v.id("organizations"),
+    fundId: v.id("funds"),
+    memberId: v.optional(v.id("members")),
+    amountPledgedPaise: money,
+    status: v.union(
+      v.literal("promised"),
+      v.literal("partial"),
+      v.literal("fulfilled"),
+      v.literal("cancelled"),
+    ),
+    note: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_org_fund", ["orgId", "fundId"])
+    .index("by_org_member", ["orgId", "memberId"])
+    .index("by_org", ["orgId"]),
 
   members: defineTable({
     orgId: v.id("organizations"),
@@ -144,7 +214,12 @@ export default defineSchema({
   })
     .index("by_org_year", ["orgId", "year"])
     .index("by_grid", ["orgId", "year", "fundId"])
-    .index("by_member", ["orgId", "memberId"]),
+    .index("by_member", ["orgId", "memberId"])
+    // Arrears are read far more often than dues are written, and only unpaid
+    // rows are ever wanted. This index keeps an arrears query proportional to
+    // the number of defaulters rather than to eight years of history.
+    .index("by_open", ["orgId", "status", "year"])
+    .index("by_org", ["orgId"]),
 
   // The payment: money actually received, and how.
   payments: defineTable({
@@ -164,12 +239,15 @@ export default defineSchema({
     collectedBy: v.optional(v.id("users")),
     receiptNo: v.string(),
     reference: v.optional(v.string()),
+    /** Which collection session this belongs to, for unscheduled funds. */
+    roundId: v.optional(v.id("collectionRounds")),
     gatewayPaymentId: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_org", ["orgId"])
     .index("by_member", ["orgId", "memberId"])
+    .index("by_round", ["orgId", "roundId"])
     .index("by_gateway", ["gatewayPaymentId"])
     .index("by_idempotency", ["idempotencyKey"]),
 
@@ -200,7 +278,16 @@ export default defineSchema({
     .index("by_bank", ["orgId", "bankId"])
     .index("by_member", ["orgId", "memberId"])
     .index("by_date", ["orgId", "effectiveDate"])
-    .index("by_ref", ["orgId", "refType", "refId"]),
+    // The fund-detail screen's "where the money went" chart needs one year of
+    // one fund's debits. Without the date in this index that is every entry the
+    // fund has ever had, which at eight years is six thousand documents and
+    // several seconds.
+    .index("by_fund_date", ["orgId", "fundId", "effectiveDate"])
+    .index("by_ref", ["orgId", "refType", "refId"])
+    // Prefix-only scan of one organisation's entries. Used by the ledger
+    // rebuild (`balances.recomputeAll`) and by the demo reset, both of which
+    // need every entry and so cannot narrow to one fund, bank or year.
+    .index("by_org", ["orgId"]),
 
   transactions: defineTable({
     orgId: v.id("organizations"),
@@ -228,7 +315,8 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_org_status", ["orgId", "status"])
-    .index("by_fund", ["orgId", "fundId"]),
+    .index("by_fund", ["orgId", "fundId"])
+    .index("by_org", ["orgId"]),
 
   reconciliations: defineTable({
     orgId: v.id("organizations"),
@@ -240,7 +328,37 @@ export default defineSchema({
     note: v.optional(v.string()),
     resolvedAt: v.optional(v.number()),
     createdAt: v.number(),
-  }).index("by_bank", ["orgId", "bankId"]),
+  })
+    .index("by_bank", ["orgId", "bankId"])
+    .index("by_org", ["orgId"]),
+
+  /**
+   * Materialised balances, one row per fund and per bank.
+   *
+   * This is NOT a return to the legacy `current_balance` design. The difference
+   * is that these are:
+   *   1. updated inside the same transaction that writes the ledger entry, so
+   *      they cannot drift from the entries, and
+   *   2. rebuildable from `ledgerEntries` at any time by
+   *      `balances.recomputeAll`, which is also how they are verified.
+   *
+   * The reason for materialising: a single-pass SUM over the ledger reads every
+   * entry, and Convex caps a query at 16384 documents. At eight years of history
+   * the ledger is already around 13k entries, so summing on read would be at
+   * the limit and would break as more years arrive.
+   *
+   * The invariant is unchanged and still checkable: a balance must equal the
+   * sum of its entries. See docs/ARCHITECTURE.md -> "The ledger".
+   */
+  balances: defineTable({
+    orgId: v.id("organizations"),
+    scope: v.union(v.literal("fund"), v.literal("bank"), v.literal("member")),
+    scopeId: v.string(),
+    amountPaise: money,
+    updatedAt: v.number(),
+  })
+    .index("by_scope", ["orgId", "scope"])
+    .index("by_org", ["orgId"]),
 
   auditLog: defineTable({
     orgId: v.id("organizations"),

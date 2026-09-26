@@ -2,67 +2,70 @@ import { createContext, useContext, useMemo, type ReactNode } from "react"
 import { useMutation, useQueries } from "convex/react"
 import { api } from "../../convex/_generated/api"
 import type { Id } from "../../convex/_generated/dataModel"
-import type {
-  AuditEntry,
-  Bank,
-  Contribution,
-  Fund,
-  LedgerEntry,
-  Member,
-  Payment,
-  Transaction,
-  User,
-} from "@/lib/types"
+import type { CollectionMode, FundType, Role } from "@/lib/types"
 
 /**
- * The data layer, now backed by Convex.
+ * The data layer, now backed by Convex read models.
  *
- * Milestone M0 assembled the same shape from local seed arrays. The hook
- * contract is deliberately unchanged — `useData()` and `useActions()` — so the
- * ten screens needed no edits, and the pure selectors in `lib/selectors.ts`
- * are unchanged too, because they are pure functions of the data.
+ * ## Why this file no longer aggregates anything
  *
- * Reads are reactive: a mutation on the server re-renders every screen that
- * derives from it, with no cache invalidation anywhere in this file.
+ * Milestone M1 shipped the whole database to the browser: every ledger entry,
+ * contribution, payment, member and transaction, with `lib/selectors.ts` doing
+ * the arithmetic. That measured **1,018,956 bytes** for nine months of demo
+ * data, and extrapolates to roughly 11 MB at the eight years of real history
+ * this community actually has. It also put the numbers the treasurer relies on
+ * under client-side control, which is the wrong place for them.
  *
- * Note: aggregation still happens in the client via `lib/selectors.ts`, exactly
- * as in M0. Pushing the dashboard and reporting aggregates server-side is M2
- * work, once the query patterns are known.
+ * So aggregation moved to the server. `convex/aggregate.ts` returns computed
+ * read models — totals, rates, ageing buckets, a year × month pivot — and this
+ * file only subscribes to them. Each screen fetches what it draws, so opening
+ * Reports no longer downloads the ledger.
+ *
+ * Two server-side techniques keep the queries cheap rather than merely moving
+ * the cost across the network; both are documented in `convex/aggregate.ts`:
+ * balances come from a materialised `balances` table, and arrears read a partial
+ * `by_open` index. Neither scales with history.
+ *
+ * ## The mode rule
+ *
+ * `collectionMode` decides what a fund can do. Only `fixed_monthly` funds create
+ * dues, so only they can show arrears, waivers or a collection grid. The server
+ * enforces this in `convex/lib/funds.ts`; the screens here simply render what
+ * the read models tell them.
  */
 
 export interface CurrentUser {
   id: string
   name: string
   email: string
-  role: User["role"]
+  role: Role
   isActive: boolean
   orgName: string
   orgSlug: string
+  /** Funds a `fund_manager` is scoped to; null for org-wide roles. */
+  fundIds: string[] | null
 }
 
-export interface AppData {
-  banks: Bank[]
-  funds: Fund[]
-  members: Member[]
-  users: User[]
-  contributions: Contribution[]
-  payments: Payment[]
-  ledgerEntries: LedgerEntry[]
-  transactions: Transaction[]
-  auditLog: AuditEntry[]
-  currentUser: CurrentUser
-}
+/**
+ * The sidebar/header summary. Small enough to load on every screen.
+ *
+ * Derived from the generated function reference rather than hand-written, so
+ * the sidebar cannot drift from what the server actually returns.
+ */
+export type Shell = Awaited<
+  ReturnType<NonNullable<(typeof api.aggregate.shell)["_fn"]>>
+>
 
 export interface AppActions {
   setContributionStatus: (
     contributionId: string,
-    status: Contribution["status"],
+    status: "due" | "paid" | "partial" | "waived",
     reason?: string,
   ) => Promise<void>
   setMonthStatus: (
     year: number,
     month: number,
-    status: Contribution["status"],
+    status: "due" | "paid" | "partial" | "waived",
     reason?: string,
   ) => Promise<void>
   setTransactionStatus: (
@@ -72,60 +75,45 @@ export interface AppActions {
   ) => Promise<void>
   addFund: (input: {
     name: string
-    type: Fund["type"]
+    type: FundType
+    collectionMode: CollectionMode
     monthlyRupees: number
+    targetRupees?: number
   }) => Promise<void>
 }
 
 interface StoreValue {
-  data: AppData | null
-  actions: AppActions
+  me: CurrentUser | null
+  shell: Shell | null
   isLoading: boolean
   error: string | null
+  actions: AppActions
 }
 
 const StoreContext = createContext<StoreValue | null>(null)
 
 /**
- * The ten reads behind `useData()`.
+ * The two reads that are always live.
  *
- * They run unconditionally. Unauthenticated they fail server-side, which is
- * harmless: the router has already sent the user to /auth, so the error state
- * below is never painted. Gating them on auth would mean re-subscribing to all
- * ten the moment a session appears.
+ * Deliberately just `me` and the shell summary: identity, the org totals in the
+ * sidebar, and the readiness signal the auth gate waits on.
+ *
+ * `useQueries`, not `useQuery`, and the difference is not cosmetic. `useQuery`
+ * **rethrows** a server error; `useQueries` hands it back as a value. Since
+ * this provider wraps the whole app in `main.tsx`, a single rethrow would take
+ * the entire tree down — so a signed-out visitor, whose `data:me` correctly
+ * fails with "Not signed in", would get a blank page instead of the sign-in
+ * form. Catching the error here and painting it in `AuthGate` is what keeps
+ * `/auth` reachable. Every screen hook in `data/queries.ts` does the same.
  */
-const QUERIES = {
-  me: { query: api.data.me, args: {} },
-  banks: { query: api.data.listBanks, args: {} },
-  funds: { query: api.data.listFunds, args: {} },
-  members: { query: api.data.listMembers, args: { includeInactive: true } },
-  users: { query: api.data.listUsers, args: {} },
-  contributions: { query: api.data.listContributions, args: {} },
-  payments: { query: api.data.listPayments, args: {} },
-  ledger: { query: api.data.listLedgerEntries, args: {} },
-  transactions: { query: api.data.listTransactions, args: {} },
-  audit: { query: api.data.listAuditLog, args: { limit: 50 } },
-} as const
-
 export function DataProvider({ children }: { children: ReactNode }) {
-  const results = useQueries(QUERIES)
+  const { me, shell } = useQueries({
+    me: { query: api.data.me, args: {} },
+    shell: { query: api.aggregate.shell, args: {} },
+  })
 
-  const {
-    me,
-    banks,
-    funds,
-    members,
-    users,
-    contributions,
-    payments,
-    ledger,
-    transactions,
-    audit,
-  } = results
-
-  const values = Object.values(results)
-  const isLoading = values.some((r) => r === undefined)
-  const firstError = values.find((r) => r instanceof Error)
+  const isLoading = me === undefined || shell === undefined
+  const firstError = [me, shell].find((r) => r instanceof Error)
   const error = firstError instanceof Error ? firstError.message : null
 
   const mutateStatus = useMutation(api.members.setContributionStatus)
@@ -154,60 +142,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
           await mutateReject({ transactionId: id, note })
         }
       },
-      addFund: async ({ name, type, monthlyRupees }) => {
+      addFund: async ({ name, type, collectionMode, monthlyRupees, targetRupees }) => {
         await mutateCreateFund({
           name,
           type,
+          collectionMode,
           monthlyAmountPaise: Math.round(monthlyRupees * 100),
+          targetAmountPaise:
+            targetRupees === undefined
+              ? undefined
+              : Math.round(targetRupees * 100),
         })
       },
     }),
     [mutateStatus, mutateMonth, mutateApprove, mutateReject, mutateCreateFund],
   )
 
-  const data = useMemo<AppData | null>(() => {
-    if (
-      !me ||
-      !banks ||
-      !funds ||
-      !members ||
-      !users ||
-      !contributions ||
-      !payments ||
-      !ledger ||
-      !transactions ||
-      !audit
-    ) {
-      return null
-    }
-    return {
-      banks: banks as Bank[],
-      funds: funds as Fund[],
-      members: members as Member[],
-      users: users as User[],
-      contributions: contributions as Contribution[],
-      payments: payments as Payment[],
-      ledgerEntries: ledger as LedgerEntry[],
-      transactions: transactions as Transaction[],
-      auditLog: audit as AuditEntry[],
-      currentUser: me as CurrentUser,
-    }
-  }, [
-    me,
-    banks,
-    funds,
-    members,
-    users,
-    contributions,
-    payments,
-    ledger,
-    transactions,
-    audit,
-  ])
-
   const value = useMemo<StoreValue>(
-    () => ({ data, actions, isLoading, error }),
-    [data, actions, isLoading, error],
+    () => ({ me: me ?? null, shell: shell ?? null, isLoading, error, actions }),
+    [me, shell, isLoading, error, actions],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
@@ -220,14 +173,20 @@ export function useStore(): StoreValue {
 }
 
 /**
- * Data for a screen. Throws if called before the data has arrived — the app
- * shell gates rendering on readiness, so by the time a screen renders this
+ * The signed-in user. Throws if called before the query has resolved — the auth
+ * gate blocks rendering until it has, so by the time a screen renders this
  * always resolves.
  */
-export function useData(): AppData {
-  const { data } = useStore()
-  if (!data) throw new Error("useData called before data was loaded")
-  return data
+export function useCurrentUser(): CurrentUser {
+  const { me } = useStore()
+  if (!me) throw new Error("useCurrentUser called before the session loaded")
+  return me
+}
+
+export function useShell(): Shell {
+  const { shell } = useStore()
+  if (!shell) throw new Error("useShell called before the shell loaded")
+  return shell
 }
 
 export function useActions(): AppActions {

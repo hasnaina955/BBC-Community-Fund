@@ -2,6 +2,7 @@ import type { MutationCtx } from "../_generated/server"
 import type { DataModel, Id } from "../_generated/dataModel"
 import type { Actor } from "./authz"
 import { assertPaise, nowIso } from "./money"
+import { applyToBalance } from "./balances"
 
 type EntryDoc = DataModel["ledgerEntries"]["document"]
 
@@ -75,7 +76,7 @@ export async function postEntry(
   const effectiveDate = input.effectiveDate ?? nowIso()
   await assertPeriodOpen(ctx, actor.orgId, effectiveDate)
 
-  return ctx.db.insert("ledgerEntries", {
+  const id = await ctx.db.insert("ledgerEntries", {
     orgId: actor.orgId,
     fundId: input.fundId,
     bankId: input.bankId,
@@ -90,6 +91,29 @@ export async function postEntry(
     note: input.note,
     actorId: actor.userId,
   })
+
+  // Same transaction as the entry, so the counter cannot drift from it.
+  await touchScopes(ctx, actor.orgId, input, input.amountPaise)
+
+  return id
+}
+
+/** Apply an entry's effect to every materialised scope it touches. */
+async function touchScopes(
+  ctx: MutationCtx,
+  orgId: Id<"organizations">,
+  target: { fundId?: Id<"funds">; bankId?: Id<"banks">; memberId?: Id<"members"> },
+  amountPaise: number,
+): Promise<void> {
+  if (target.fundId) {
+    await applyToBalance(ctx, orgId, "fund", target.fundId, amountPaise)
+  }
+  if (target.bankId) {
+    await applyToBalance(ctx, orgId, "bank", target.bankId, amountPaise)
+  }
+  if (target.memberId) {
+    await applyToBalance(ctx, orgId, "member", target.memberId, amountPaise)
+  }
 }
 
 /**
@@ -157,6 +181,20 @@ export async function postTransfer(
     actorId: actor.userId,
   })
 
+  // A transfer is balanced: one scope debited, one credited, same amount.
+  await touchScopes(
+    ctx,
+    actor.orgId,
+    { fundId: input.fromFundId, bankId: input.fromBankId },
+    -input.amountPaise,
+  )
+  await touchScopes(
+    ctx,
+    actor.orgId,
+    { fundId: input.toFundId, bankId: input.toBankId },
+    input.amountPaise,
+  )
+
   return [outgoing, incoming]
 }
 
@@ -179,7 +217,7 @@ export async function reverseEntry(
     throw new Error("That entry is in a closed period and cannot be reversed")
   }
 
-  return ctx.db.insert("ledgerEntries", {
+  const id = await ctx.db.insert("ledgerEntries", {
     orgId: actor.orgId,
     fundId: original.fundId,
     bankId: original.bankId,
@@ -194,6 +232,19 @@ export async function reverseEntry(
     note: reason ? `Reversal — ${reason}` : "Reversal",
     actorId: actor.userId,
   })
+
+  await touchScopes(
+    ctx,
+    actor.orgId,
+    {
+      fundId: original.fundId,
+      bankId: original.bankId,
+      memberId: original.memberId,
+    },
+    -original.amountPaise,
+  )
+
+  return id
 }
 
 /* ------------------------------------------------------------- derived reads */
