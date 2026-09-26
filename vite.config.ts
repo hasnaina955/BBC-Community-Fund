@@ -1,0 +1,22 @@
+import path from "node:path"
+import { defineConfig } from "vite"
+import react from "@vitejs/plugin-react"
+
+// Freebuff requires HMR to stay disabled. Do not enable it here.
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    hmr: false,
+  },
+  preview: {
+    host: "0.0.0.0",
+    port: 5173,
+  },
+})

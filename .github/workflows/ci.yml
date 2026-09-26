@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # --frozen-lockfile so CI fails if bun.lock is out of date rather than
+      # silently resolving something different from what was committed.
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # Covers src/ and convex/. Convex codegen output is committed, so this
+      # needs no deployment and no secrets.
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build
+        run: bunx vite build
