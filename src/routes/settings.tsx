@@ -7,15 +7,27 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { PageHeader } from "@/components/shared/page-header"
 import { EmptyState } from "@/components/shared/stat-card"
-import { useData } from "@/data/store"
-import { formatDateTime, rupeesToPaise } from "@/lib/format"
+import { CollectionModeBadge } from "@/components/shared/status-badge"
+import { ReadModelLoader } from "@/components/shared/read-model"
+import { useAuditLog, useFunds } from "@/data/queries"
+import { useCurrentUser } from "@/data/store"
+import { formatDateTime, formatPaise } from "@/lib/format"
+import { COLLECTION_MODE_HINTS, COLLECTION_MODE_LABELS } from "@/lib/types"
 
+/**
+ * The admin screen. The organisation name comes from the signed-in session, the
+ * fund list from `aggregate:funds`, and the audit trail from `aggregate:audit`
+ * with actor names already resolved.
+ *
+ * The collection rules card is where the community's real convention is
+ * written down — which funds carry dues, and which are simply collected.
+ */
 export default function Settings() {
-  const data = useData()
-  const isAdmin = data.currentUser.role === "admin"
-  const contributionFund = data.funds.find((f) => f.isMemberContribution)
+  const me = useCurrentUser()
+  const fundsModel = useFunds()
+  const auditModel = useAuditLog()
 
-  if (!isAdmin) {
+  if (me.role !== "admin") {
     return (
       <div className="space-y-6">
         <PageHeader title="Settings" />
@@ -27,6 +39,10 @@ export default function Settings() {
       </div>
     )
   }
+
+  const dueFund = (fundsModel ?? []).find(
+    (f) => f.collectionMode === "fixed_monthly",
+  )
 
   return (
     <div className="space-y-6">
@@ -40,28 +56,24 @@ export default function Settings() {
           <CardHeader>
             <CardTitle>Organisation</CardTitle>
             <CardDescription>
-              Community identity. Multi-organisation support arrives in
-              milestone M6.
+              Community identity. Multi-organisation support arrives in milestone
+              M6.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="org-name">Name</Label>
-              <Input id="org-name" defaultValue="Jamaat Anjuman" />
+              <Input id="org-name" defaultValue={me.orgName} readOnly />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="org-city">City</Label>
-              <Input id="org-city" defaultValue="Mumbai" />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="org-fy">Financial year start</Label>
-              <Input id="org-fy" defaultValue="January" />
+              <Label htmlFor="org-slug">Reference</Label>
+              <Input id="org-slug" defaultValue={me.orgSlug} readOnly />
             </div>
             <Button size="sm" disabled>
               Save changes
             </Button>
             <p className="text-xs text-muted-foreground">
-              Settings persistence arrives with the backend in milestone M1.
+              Renaming the organisation is milestone M6 work.
             </p>
           </CardContent>
         </Card>
@@ -70,32 +82,65 @@ export default function Settings() {
           <CardHeader>
             <CardTitle>Collection rules</CardTitle>
             <CardDescription>
-              How monthly contributions are derived for members
+              Which funds carry dues, and which are simply collected
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label>Contribution fund</Label>
+              <Label>Monthly dues fund</Label>
               <div className="rounded-md border px-3 py-2 text-sm">
-                {contributionFund?.name ?? "None configured"}
+                {dueFund ? (
+                  <span className="flex items-center gap-2">
+                    <CollectionModeBadge mode={dueFund.collectionMode} />
+                    {dueFund.name} · {formatPaise(dueFund.monthlyAmountPaise ?? 0)}
+                  </span>
+                ) : (
+                  "None configured"
+                )}
               </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="monthly">Default monthly amount (₹)</Label>
-              <Input
-                id="monthly"
-                inputMode="numeric"
-                defaultValue={String((contributionFund?.monthlyPaise ?? 0) / 100)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="due-day">Due day of month</Label>
-              <Input id="due-day" inputMode="numeric" defaultValue="10" />
-            </div>
+
             <Separator />
+
             <div className="space-y-2">
-              <Label>Practical rules</Label>
-              <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
+              <Label>Every fund and how it is collected</Label>
+              {fundsModel === undefined ? (
+                <ReadModelLoader label="Loading funds" />
+              ) : (
+                <ul className="space-y-2">
+                  {fundsModel.map((fund) => (
+                    <li
+                      key={fund.id}
+                      className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                    >
+                      <CollectionModeBadge mode={fund.collectionMode} />
+                      <span className="font-medium">{fund.name}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {COLLECTION_MODE_HINTS[fund.collectionMode]}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <Separator />
+
+            <div className="space-y-2">
+              <Label>What each mode means</Label>
+              <ul className="space-y-1.5 pl-5 text-sm text-muted-foreground">
+                {(
+                  Object.keys(COLLECTION_MODE_LABELS) as Array<
+                    keyof typeof COLLECTION_MODE_LABELS
+                  >
+                ).map((mode) => (
+                  <li key={mode}>
+                    <span className="font-medium text-foreground">
+                      {COLLECTION_MODE_LABELS[mode]}
+                    </span>{" "}
+                    — {COLLECTION_MODE_HINTS[mode]}
+                  </li>
+                ))}
                 <li>
                   Members joining mid-year are charged from the month they join —
                   dues are prorated, not charged for the full year.
@@ -109,9 +154,6 @@ export default function Settings() {
                 </li>
               </ul>
             </div>
-            <Button size="sm" disabled>
-              Save changes
-            </Button>
           </CardContent>
         </Card>
       </div>
@@ -146,38 +188,44 @@ export default function Settings() {
             Audit log
           </CardTitle>
           <CardDescription>
-            The legacy build wrote audit rows that no endpoint could read. This
-            is that screen.
+            Every mutation, with the person who made it. The legacy build wrote
+            audit rows that no endpoint could read; this is that screen.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
-          {data.auditLog.map((entry) => {
-            const actor = data.users.find((u) => u.id === entry.userId)
-            return (
+          {auditModel === undefined ? (
+            <ReadModelLoader label="Loading the audit log" />
+          ) : auditModel.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              Nothing recorded yet.
+            </p>
+          ) : (
+            auditModel.map((entry) => (
               <div
                 key={entry.id}
                 className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-2 text-sm last:border-0"
               >
-                <Badge variant="secondary" className="font-mono text-[10px]">
+                <Badge
+                  variant="secondary"
+                  className="font-mono text-[10px]"
+                >
                   {entry.action}
                 </Badge>
                 <span className="text-muted-foreground">
                   {entry.entityType}
                   {entry.entityId ? ` · ${entry.entityId}` : ""}
                 </span>
-                <span className="min-w-0 flex-1 truncate">{entry.details}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {entry.details}
+                </span>
                 <span className="text-xs text-muted-foreground">
-                  {actor?.name ?? "system"} · {formatDateTime(entry.createdAt)}
+                  {entry.actorName} · {formatDateTime(entry.createdAt)}
                 </span>
               </div>
-            )
-          })}
+            ))
+          )}
         </CardContent>
       </Card>
     </div>
   )
 }
-
-// Referenced to keep the paise helper imported for the monthly field above,
-// which will convert user input to paise once the backend exists.
-void rupeesToPaise

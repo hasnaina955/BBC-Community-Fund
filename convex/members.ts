@@ -2,7 +2,8 @@ import { mutation } from "./_generated/server"
 import { v } from "convex/values"
 import { requireTreasurer, assertCanWriteFund } from "./lib/authz"
 import { recordAudit, AUDIT } from "./lib/audit"
-import { assertMonth, assertPaise, assertYear, nowIso } from "./lib/money"
+import { assertMonth, assertPaise, assertYear } from "./lib/money"
+import { assertHasDues } from "./lib/funds"
 
 /**
  * Members and the contributions they owe.
@@ -138,6 +139,14 @@ export const createContribution = mutation({
     }
     if (args.fundId) assertCanWriteFund(actor, args.fundId)
 
+    // Only a fund that actually collects a fixed amount may accrue dues. This
+    // is what stops a voluntary fund from acquiring a grid or arrears.
+    if (args.fundId) {
+      const fund = await ctx.db.get(args.fundId)
+      if (!fund || fund.orgId !== actor.orgId) throw new Error("Fund not found")
+      assertHasDues(fund)
+    }
+
     // Proration: a member who joined this year owes nothing for the months
     // before they joined. The legacy model stored `joinedYear` and never used
     // it. See docs/RECOVERY.md -> flaw 3.
@@ -212,6 +221,12 @@ export const setContributionStatus = mutation({
       throw new Error("Contribution not found")
     }
     if (contribution.fundId) assertCanWriteFund(actor, contribution.fundId)
+
+    // Waiving is meaningless for a fund nobody owes.
+    if (contribution.fundId) {
+      const fund = await ctx.db.get(contribution.fundId)
+      if (fund) assertHasDues(fund)
+    }
 
     // A waiver is a decision the committee records, so it needs a reason.
     if (args.status === "waived" && !args.reason?.trim()) {
@@ -305,8 +320,13 @@ export const generateMonth = mutation({
 
     const fund = await ctx.db.get(args.fundId)
     if (!fund || fund.orgId !== actor.orgId) throw new Error("Fund not found")
-    if (!fund.isMemberContribution || !fund.monthlyAmountPaise) {
-      throw new Error("That fund does not collect monthly contributions")
+    // The hard gate: no dues row is ever created for a fund that is not
+    // `fixed_monthly`.
+    assertHasDues(fund)
+    if (!fund.monthlyAmountPaise) {
+      throw new Error(
+        `"${fund.name}" has no monthly amount set, so there is nothing to charge.`,
+      )
     }
 
     const members = await ctx.db
@@ -367,5 +387,3 @@ export const generateMonth = mutation({
     return { created, skipped: members.filter((m) => m.isActive).length - created }
   },
 })
-
-export { nowIso }

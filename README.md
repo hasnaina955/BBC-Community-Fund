@@ -9,7 +9,8 @@ workflow, and reconcile every rupee against the bank.
 ---
 
 > [!IMPORTANT]
-> **Milestones M0 and M1 are complete — this runs against a real backend.**
+> **Milestones M0, M1 and M2a–M2c are complete — this runs against a real
+> backend, over eight years of real-shaped history.**
 >
 > This repo previously held only a compiled frontend bundle whose backend had
 > been lost. The app has been rebuilt as a Vite + React + TypeScript + Convex
@@ -45,11 +46,14 @@ CommunityFund is the tool a treasurer uses to:
 | --- | --- |
 | Source code | **Done (M0)** — Vite + React + TS, 10 routes, all compiling |
 | Design system | **Done (M0)** — light + dark tokens recovered from the legacy CSS |
-| Domain model | **Done (M0)** — v2 schema pushed to Convex, 17 tables |
+| Domain model | **Done (M0/M2c)** — v2 schema in Convex, incl. `collectionMode` |
 | Backend / API | **Done (M1)** — queries, mutations, ledger writer, audited |
 | Authentication | **Done (M1)** — Convex Auth, PBKDF2 passwords, JWT sessions |
-| Data | **Done (M1)** — seeded: 1 org, 5 staff, 3 banks, 6 funds, 120 members |
-| Reconciliation UI, FY close UI | M2 |
+| Trustworthy money | **Done (M2a)** — derived balances, materialised and verifiable |
+| Server-side aggregation | **Done (M2b)** — every dashboard and report figure |
+| Collection modes | **Done (M2c)** — arrears only where a due actually exists |
+| Data | **Done (M1)** — seeded: 1 org, 5 staff, 3 banks, 6 funds, 84 members |
+| Reconciliation UI, FY close UI | M2d |
 | Member portal, payments, reminders | M3–M5 |
 
 ## Running it
@@ -59,6 +63,9 @@ bun install
 bun run dev        # Convex backend + Vite together, http://localhost:5173
 bun run typecheck  # tsc -b --noEmit, app + convex
 bun run build      # typecheck + production build into dist/
+bun run check      # authz, the mode rule, and the balance invariant
+bun run smoke      # every read model returns against the seeded data
+bun run measure    # payload per screen, against history
 ```
 
 `bun run dev` starts **both** halves, because the Convex backend only listens
@@ -97,7 +104,41 @@ The seeded deployment signs in with any of these, password `community123`:
 | `farhan@jamaat.org` | viewer (read-only) |
 | `sadia@jamaat.org` | deactivated |
 
-Re-seeding: `bun run convex:seed`. It refuses to run twice.
+Re-seeding: `bun run seed:reset && bun run convex:seed`. The reset refuses to
+run without its exact confirm string, and only ever touches the demo
+organisation.
+
+### Back-filling the real history
+
+The seeded deployment has nine months of data. The community's actual books go
+back to 2018, and reproducing that is the only honest way to check that the app
+handles its volume:
+
+```bash
+bun run seed:history   # 2018 → last year, one year per call
+bun run check          # every materialised balance equals the sum of its entries
+bun run smoke          # all 30 read models return a result
+bun run measure        # what each screen actually downloads
+```
+
+`seed:history` is one year per mutation because Convex allows 4096 document
+reads inside a write transaction and a single year is already several thousand
+rows. It resumes safely, and backs off when the local deployment's write-rate
+limit intervenes.
+
+`bun run measure` is the regression guard that matters most. With M1's
+client-side aggregation, at eight years of history two read models **fail
+outright** rather than merely getting slow:
+
+```
+data:listLedgerEntries   Array length is too long (10066 > maximum length 8192)
+data:listPayments        Array length is too long ( 9979 > maximum length 8192)
+```
+
+| | Bytes for the whole app, at 8 years |
+| --- | --- |
+| Client-side aggregation (M1) | 1,492,414 — and two queries fail |
+| Server-side read models (M2b) | 180,296 |
 
 ## Recovered stack
 
@@ -139,16 +180,18 @@ Start here, then go deeper:
 │   ├── components/ui/         # shadcn/ui primitives
 │   ├── components/layout/     # app shell, auth gate, route guard
 │   ├── components/shared/     # page header, stat cards, status badges
-│   ├── lib/                   # types, money, derived selectors, convex client
-│   └── data/                  # period constants + Convex-backed store
+│   ├── lib/                   # types, money, formatting, convex client
+│   └── data/                  # shell store, per-screen read models, period
 ├── convex/                    # backend
-│   ├── schema.ts              # v2 schema
+│   ├── schema.ts              # v2 schema, incl. collectionMode and balances
 │   ├── auth.ts  auth.config.ts  http.ts
-│   ├── data.ts                # org-scoped read models
-│   ├── funds.ts  members.ts  transactions.ts
-│   ├── seed.ts                # one-shot demo seeder
-│   └── lib/                   # authz, audit, ledger, money, password
-├── scripts/dev.mjs            # runs Convex + Vite together
+│   ├── data.ts                # org-scoped row reads
+│   ├── aggregate.ts           # every dashboard and report figure
+│   ├── balances.ts            # verify / recompute the balance invariant
+│   ├── funds.ts  members.ts  transactions.ts  collections.ts
+│   ├── seed.ts                # demo seeder + guarded reset + history
+│   └── lib/                   # authz, audit, ledger, balances, funds, money
+├── scripts/                   # dev runner, seed drivers, smoke + measure
 ├── legacy/                    # the ONLY copy of the original build — read-only
 │   ├── index.html
 │   └── assets/
@@ -165,26 +208,43 @@ Start here, then go deeper:
 
 ## The plan in one paragraph
 
-M0 reclaimed the codebase and M1–M2 stand up a real backend with real
-authentication and a trustworthy ledger. Then the product grows outward: a
-member portal so people can see what they owe (M3), actual online collection
-(M4), automated reminders that chase unpaid contributions (M5), multi-tenancy
-so more than one community can use it (M6), reporting and compliance (M7), and
-finally operational hardening (M8).
+M0 reclaimed the codebase and M1–M2c stand up a real backend with real
+authentication, a trustworthy ledger, aggregation that survives eight years of
+history, and a fund model that knows the difference between money members owe
+and money they choose to give. Reconciliation and fiscal-year close finish M2
+(M2d). Then the product grows outward: a member portal so people can see what
+they owe (M3), actual online collection (M4), automated reminders that chase
+unpaid contributions (M5), multi-tenancy so more than one community can use it
+(M6), reporting and compliance (M7), and finally operational hardening (M8).
 
 ## Working on this repository
 
 Start with [docs/RECOVERY.md](docs/RECOVERY.md) to understand what was
 recovered, then work against [docs/ROADMAP.md](docs/ROADMAP.md).
 
-Two conventions matter here:
+Three conventions matter here:
 
 - **Money is integer paise**, never floats or decimal strings. Format for
   display at the UI edge with the helpers in `src/lib/format.ts`.
-- **Balances are never stored.** They are derived from `ledgerEntries` by the
-  pure functions in `src/lib/selectors.ts`. There is deliberately no
+- **Balances are never authored.** They are derived from `ledgerEntries`, and
+  the derivation is materialised into `balances` so it can be read at scale —
+  written in the same transaction as the entry, rebuildable from the entries,
+  and checkable on demand with `balances:verify`. There is deliberately no
   `currentBalance` field on funds or banks. Only `convex/lib/ledger.ts` may
   write a `ledgerEntries` row.
+- **Aggregation happens in Convex, not in the browser.** `src/lib/selectors.ts`
+  is gone; `convex/aggregate.ts` returns computed read models and each screen
+  subscribes to the one it draws. A `.collect()` of the whole ledger would
+  exceed Convex's 16384-document limit at this community's history length, so
+  reads are index-bounded by year, fund or open status instead.
+
+And one domain rule that is enforced in exactly one place,
+`convex/lib/funds.ts`:
+
+- **Only a `fixed_monthly` fund has dues.** Arrears, waivers and the collection
+  grid exist for that mode alone. A voluntary, pledge-based or donation fund
+  never acquires a debt, because for those funds nobody owes anything.
+  `assertHasDues()` is the gate, and `bun run check` asserts it.
 
 The legacy build is read-only reference material. Preserve it and every
 pre-existing change.

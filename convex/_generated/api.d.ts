@@ -8,12 +8,17 @@
  * @module
  */
 
+import type * as aggregate from "../aggregate.js";
 import type * as auth from "../auth.js";
+import type * as balances from "../balances.js";
+import type * as collections from "../collections.js";
 import type * as data from "../data.js";
 import type * as funds from "../funds.js";
 import type * as http from "../http.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_authz from "../lib/authz.js";
+import type * as lib_balances from "../lib/balances.js";
+import type * as lib_funds from "../lib/funds.js";
 import type * as lib_ledger from "../lib/ledger.js";
 import type * as lib_money from "../lib/money.js";
 import type * as lib_password from "../lib/password.js";
@@ -28,12 +33,17 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  aggregate: typeof aggregate;
   auth: typeof auth;
+  balances: typeof balances;
+  collections: typeof collections;
   data: typeof data;
   funds: typeof funds;
   http: typeof http;
   "lib/audit": typeof lib_audit;
   "lib/authz": typeof lib_authz;
+  "lib/balances": typeof lib_balances;
+  "lib/funds": typeof lib_funds;
   "lib/ledger": typeof lib_ledger;
   "lib/money": typeof lib_money;
   "lib/password": typeof lib_password;

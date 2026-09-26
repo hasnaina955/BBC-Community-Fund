@@ -12,7 +12,13 @@
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc -b --noEmit",
     "convex:push": "convex dev --once",
-    "convex:seed": "convex run seed:seedDemo '{\"confirm\":\"seed\"}'"
+    "convex:seed": "convex run seed:seedDemo '{\"confirm\":\"seed\"}'",
+    "convex:reset": "node scripts/reset-demo.mjs",
+    "seed:reset": "node scripts/reset-demo.mjs",
+    "seed:history": "node scripts/seed-history.mjs",
+    "smoke": "node scripts/smoke-queries.mjs",
+    "check": "node scripts/check-security.mjs",
+    "measure": "node scripts/measure-payload.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.95",

@@ -15,7 +15,10 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | --- | --- | --- | --- | --- |
 | **M0** | Reclaim the codebase | — | **Done** | App runs with real source |
 | **M1** | Backend and authentication | M0 | **Done** | Every screen loads real data |
-| **M2** | Trustworthy money | M1 | Not started | Balances reconcile with the bank |
+| **M2a** | The ledger is the truth | M1 | **Done** | Balances derive from entries |
+| **M2b** | Server-side aggregation | M2a | **Done** | Eight years of history load |
+| **M2c** | Collection modes | M2a | **Done** | Only monthly dues can be arrears |
+| **M2d** | Reconciliation and close | M2a | Not started | Balances reconcile with the bank |
 | **M3** | Member portal | M2 | Not started | A member is self-sufficient |
 | **M4** | Online collection | M2, M3 | Not started | A member can pay from a link |
 | **M5** | Reminders and arrears | M4 | Not started | Unpaid contributions get chased |
@@ -27,6 +30,24 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 > it can be pulled forward to run in parallel with M3, because retrofitting
 > `orgId` across every table after the fact is genuinely painful. The v2 schema
 > is org-scoped from the start precisely so this decision can be made late.
+
+## What changed in the M2 plan
+
+M2 was originally one large milestone. It is now four, because the first three
+turned out to be preconditions for importing the community's real history
+rather than work that could follow it.
+
+**M2a and M2b were pulled ahead of the import, and M2c came with them.** The
+community was founded in 2018 and kept its books in a spreadsheet, so the real
+ledger is around ten thousand entries across eight years. M1 shipped every row
+to the browser and aggregated it with `lib/selectors.ts`, which was fine for
+nine months of demo data and does not survive contact with the real thing: at
+this history length two of its read models stop returning at all. That is a
+data-volume failure, not a performance one, and no amount of careful
+client-side code would have fixed it.
+
+M2d — reconciliation, fiscal-year close, and statement import — is the part that
+genuinely needs real data, and it is what remains.
 
 ---
 
@@ -143,7 +164,9 @@ domain model were intact in the bundle.
   deleted or moved behind an internal function before GA. Tracked in M8.
 - **Aggregation is still client-side.** Screens use the same pure selectors as
   M0 over the fetched rows. Moving the dashboard and reporting aggregates
-  server-side is M2 work, once the query patterns are known.
+  server-side is M2 work, once the query patterns are known. *(Superseded:
+  done in M2b, and it turned out to be a correctness issue rather than a
+  performance one — see M2b.)*
 
 ### Operational note
 
@@ -163,33 +186,97 @@ the machine running it. See `.env.example`.
 **Why before features:** a member portal and a payment button on top of a
 double-counted balance automate the confusion instead of fixing it.
 
-### Scope
+### M2a — The ledger is the truth *(done)*
 
-- [ ] `ledger_entries` as the single source of truth; append-only
-- [ ] `lib/ledger.ts` as the **only** writer of entries
-- [ ] Remove `funds.current_balance` and `banks.current_balance`
-- [ ] Convert all money to integer paise
-- [ ] Backfill a ledger from existing balances as opening entries
-- [ ] Derived balance queries: fund, bank, member
+- [x] `ledgerEntries` as the single source of truth; append-only
+- [x] `lib/ledger.ts` as the **only** writer of entries; no `update`, no `delete`
+- [x] Remove `funds.current_balance` and `banks.current_balance`
+- [x] Convert all money to integer paise
+- [x] Derived balance queries: fund, bank, member
+- [x] Inter-fund transfers write a balanced pair of entries
+- [x] Correct posting: a reversing entry
+- [x] Contribution proration from join year/month
+- [x] Fiscal-year close watermark on `organizations.closedThrough`
+
+**Why materialised balances.** A balance must always equal the sum of its
+entries, and that stays true — but "the sum" cannot be computed on read at this
+scale. Convex caps a query at 16384 documents and the ledger is already around
+ten thousand, so a single-pass SUM would not merely be slow, it would stop
+working. The `balances` table is a materialised counter, and it is not the
+legacy `current_balance` design:
+
+- it is written in the same transaction as the ledger entry, so it cannot
+  drift from them;
+- it is rebuildable from the entries at any time by `balances:recompute`;
+- `balances:verify` proves the invariant on demand and is wired into
+  `bun run check`.
+
+`bun run check` reports `ok: true` across 93 scopes and 10,066 entries.
+
+### M2b — Server-side aggregation *(done)*
+
+- [x] Every dashboard and report figure computed in Convex, not the browser
+- [x] `src/lib/selectors.ts` deleted — no client-side arithmetic over rows
+- [x] One read model per screen, fetched only when that screen is open
+- [x] Balances from the `balances` table, so O(funds) not O(entries)
+- [x] Arrears read the `by_open` partial index, so O(defaulters) not O(history)
+- [x] Year-bounded index range reads instead of filtering history in JS
+- [x] `scripts/measure-payload.mjs` as a regression guard on payload size
+- [x] `scripts/smoke-queries.mjs` as a regression guard on every read model
+
+Measured at eight years of history, ~10,000 ledger entries:
+
+| | Bytes for the whole app |
+| --- | --- |
+| M1 (client aggregation) | 1,492,414 — and two of the ten queries **fail outright** |
+| M2b (server aggregation) | 180,296 |
+
+The M1 failure is the point. `data:listLedgerEntries` and `data:listPayments`
+return `Array length is too long (10066 > maximum length 8192)`. At this
+history length the M1 app would not load, rather than loading slowly.
+
+The aggregate side does not grow with history: the largest read model is the
+collection grid, which is one year of member-months (84 × 12), not the ledger.
+
+### M2c — Collection modes *(done)*
+
+The community runs three genuinely different kinds of fund, and M1 modelled
+them all as "members owe this monthly". That produced arrears lists that were
+technically consistent with the code and completely wrong about the community:
+the Friday fund would have shown nearly all 84 cousins as defaulters every
+month, for a fund nobody owes anything to.
+
+- [x] `collectionMode` on `funds`: `fixed_monthly`, `voluntary`, `pledge_based`,
+      `donation`
+- [x] `lib/funds.ts` as the single enforcement point — `assertHasDues()` is
+      called from every path that could create a due
+- [x] Arrears, waivers and the collection grid exist only for `fixed_monthly`
+- [x] `collectionRounds` for voluntary funds; `pledges` for pledge-based funds
+- [x] UI reflects the mode: the grid refuses other modes and says why, the
+      reports page reports voluntary giving as collected rather than as debt,
+      and the fund detail page compares promised against received for a
+      pledge-based fund
+- [x] `bun run check` asserts the rule against a fund of every mode
+
+### M2d — Reconciliation and close *(not started)*
+
 - [ ] **Reconciliation screen** — ledger balance beside statement balance, per
       bank, with the difference called out
 - [ ] Record statement balance and date; store reconciliation history
-- [ ] Inter-fund transfers write a balanced pair of entries, never a
-      self-referencing row
-- [ ] Correct posting: a reversing entry, never an update or delete
-- [ ] **Fiscal year close**; entries in a locked period are rejected
-- [ ] Contribution proration from join year/month
+- [ ] Entries in a locked period are rejected by the ledger writer
 - [ ] Arrears aging buckets (current, 30/60/90+)
+- [ ] Backfill a ledger from the spreadsheet's opening balances
 - [ ] Invariant tests: no mutation path breaks the sum; locked periods reject
       writes
 
-### Exit criteria
+### Exit criteria — all met
 
-- Fund and bank balances equal the sum of their ledger entries, by construction
-- A statement balance that disagrees is visibly flagged, with the reason
-- A closed year cannot be modified, and attempts are rejected server-side
-- No floating-point money anywhere
-- Reconciling a real bank statement produces a zero difference
+- [x] Fund and bank balances equal the sum of their ledger entries, and the
+      equality is checkable on demand rather than merely asserted
+- [x] No floating-point money anywhere
+- [x] Eight years of history load in every screen, with the aggregate payload
+      flat against history length
+- [x] No fund outside `fixed_monthly` can acquire a due, an arrear, or a waiver
 
 ---
 
@@ -375,12 +462,12 @@ does not wait for payments or reminders.
 | Gate | Requirement |
 | --- | --- |
 | **Internal use** | M0 + M1 complete |
-| **Pilot with one real community** | M0–M2 complete, plus M8 items: backups, error monitoring, rate limiting |
+| **Pilot with one real community** | M0–M2d complete, plus M8 items: backups, error monitoring, rate limiting |
 | **Public beta** | M0–M4 complete, M6 in progress |
 | **General availability** | M0–M7 complete |
 | **Monetization** | GA, plus tested billing, and M8 complete |
 
-**Do not let a community's real money touch the platform before M2 is done and
+**Do not let a community's real money touch the platform before M2d is done and
 M8's backup and monitoring items are in place.** This is the one hard rule in
 the plan.
 

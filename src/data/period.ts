@@ -16,5 +16,19 @@ export const CURRENT_YEAR = TODAY.getFullYear()
 export const CURRENT_MONTH = TODAY.getMonth() + 1
 export const MONTHS_ELAPSED = CURRENT_MONTH
 
-/** The two years the collection grid offers. */
-export const GRID_YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR] as const
+/**
+ * Every year the year-pickers may offer, oldest first.
+ *
+ * This community started in 2018, so a two-year picker would hide almost all of
+ * its history — the year a fund was founded, the year the mosque rebuild began,
+ * the year someone left a long unpaid run of dues. The lower bound comes from
+ * the shell's `yearRange`, which the server derives from the member join dates,
+ * so it is correct for any organisation rather than a hard-coded 2018.
+ */
+export function yearsInRange(from: number, to: number = CURRENT_YEAR): number[] {
+  const start = Math.min(from, to)
+  const end = Math.max(from, to)
+  const years: number[] = []
+  for (let y = end; y >= start; y -= 1) years.push(y)
+  return years
+}

@@ -105,7 +105,8 @@ They drift, and drift is undetectable. A balance was an assertion, not a fact.
 
 ### The decision
 
-**Balances are never stored. They are always derived from immutable entries.**
+**Balances are never authored by hand. They are always derived from immutable
+entries, and the derivation is materialised rather than computed on read.**
 
 ```
 ledger_entries: one row per financial fact, append-only
@@ -114,19 +115,144 @@ ledger_entries: one row per financial fact, append-only
         ▼               ▼               ▼
    fund balance    bank balance    member balance
    (sum by fund)  (sum by bank)   (sum by member)
+                        │
+                        ▼  same transaction, every write
+              balances: one row per scope
 ```
 
 Rules:
 
 1. `ledger_entries` is **append-only**. A correction is a new reversing entry,
    never an update or a delete.
-2. A balance is `SUM(amount_paise)` filtered by fund or bank. Computed in a
-   query, cached by the reactive layer.
+2. A balance is `SUM(amount_paise)` filtered by fund or bank. The sum is
+   **materialised** into the `balances` table, and the materialised value is
+   the answer — but it is never an independent assertion.
 3. `funds.current_balance` and `banks.current_balance` **do not exist** in v2.
 4. An entry records *who* did it, *when*, and *where it came from* — a
    transaction, a payment, a correction, an opening balance.
 5. Entries carry `locked_to`. A financial-year close sets it, and any write
    into a locked period is rejected.
+
+### Why the sum is materialised
+
+The invariant is unchanged — a balance must equal the sum of its entries — but
+the sum cannot be computed on every read.
+
+Convex caps a single query at 16384 documents. This community was founded in
+2018 and kept its books in a spreadsheet until now, so the ledger is already
+around ten thousand entries. A single-pass SUM over it is at the limit today
+and breaks as more years arrive. The naive fix — a `current_balance` column,
+mutated on approval — is the exact design this milestone exists to replace: two
+code paths, no reconciliation, drift that is undetectable.
+
+So the `balances` table sits between the two failures, and it is not the legacy
+design because of what surrounds it:
+
+- **Same transaction.** Every write that posts a ledger entry also adjusts the
+  materialised balance. There is no window in which they disagree.
+- **Rebuildable.** `balances:recompute` derives every value from the entries at
+  any time. The counter is a cache of a fact, not the fact.
+- **Verifiable.** `balances:verify` reports any drift without changing
+  anything, and runs as part of `bun run check`. The invariant is *checked*, not
+  *asserted*.
+
+The property the original schema lacked is not "no stored counter" — it is
+"no way to tell whether the counter is right".
+
+### Reading a year, not the history
+
+Most screens want one year, not everything. `effectiveDate` is an ISO string and
+`by_date` is `(orgId, effectiveDate)`, so a year is a contiguous key range:
+
+```ts
+q.eq("orgId", orgId).gte("effectiveDate", "2024-01-01")
+                .lte("effectiveDate", "2024-12-31")
+```
+
+This is the difference between reading ~1.2k rows and reading all ~10k. The
+same trick with `(orgId, fundId, effectiveDate)` is what keeps the fund detail
+screen at 100 ms rather than the 6.7 s it took when it scanned every entry the
+fund had ever had.
+
+Arrears is the other one. It is read through `contributions.by_open`, a partial
+index on `(orgId, status, year)`; matching only `orgId` and `status = due`
+selects every outstanding due in any year, so the result is proportional to the
+number of defaulters rather than to eight years of history.
+
+---
+
+## Aggregation lives on the server
+
+M1 fetched every ledger entry, contribution and payment and aggregated it in the
+browser with `src/lib/selectors.ts`. That is a design that works right up until
+the moment it does not.
+
+At eight years of history it is not slow — it is **broken**. Two of M1's read
+models return `Array length is too long (10066 > maximum length 8192)`. The
+app would not load.
+
+Every figure on the dashboard and every report is now computed in
+`convex/aggregate.ts` and sent as numbers. Each screen subscribes to one read
+model, fetched only when that screen is open. Measured with
+`bun run measure`:
+
+| | Bytes for the whole app, at 8 years |
+| --- | --- |
+| Client-side aggregation (M1) | 1,492,414 — and two queries fail outright |
+| Server-side read models (M2b) | 180,296 |
+
+The aggregate side is flat against history length. The largest read model is the
+collection grid, which is one year of member-months (84 × 12) — bounded by the
+grid itself, not by the ledger.
+
+### Errors: `useQuery` throws, `useQueries` returns
+
+Convex's `useQuery` rethrows a server error; `useQueries` hands it back as a
+value. Which one you use is a correctness decision, not a style one.
+
+The two always-on shell queries in `DataProvider` run above any React error
+boundary and wrap the whole app, so they use `useQueries` and `AuthGate` paints
+the failure. Getting this backwards means a signed-out visitor — whose
+`data:me` correctly fails with "Not signed in" — gets a blank page instead of
+the sign-in form.
+
+Screen queries use `useQuery` and are wrapped by `ErrorBoundary` in the app
+shell, which catches the rethrow and renders it in place of the screen with a
+retry. A fund id that no longer resolves should cost you that one page, not the
+sidebar.
+
+---
+
+## Collection modes
+
+The community runs three genuinely different kinds of fund, and the original
+schema modelled them all as "members owe this monthly":
+
+- **Monthly dues** — ₹100 per member per month, every month, since 2018.
+- **Friday fund** — voluntary giving after Friday prayers, any amount, and
+  members frequently give anonymously.
+- **Mosque reconstruction** — a promise made now and paid over time.
+- **Zakat, charity, emergency** — given and spent, with no obligation attached.
+
+`funds.collectionMode` names which of these a fund is, and it is the field the
+entire arrears concept hangs off:
+
+| Mode | Primary view | Arrears | Waive |
+| --- | --- | --- | --- |
+| `fixed_monthly` | member × month grid | yes | yes |
+| `voluntary` | rounds + receipt book | **never** | no |
+| `pledge_based` | promised vs received vs spent | promises only | no |
+| `donation` | ledger + totals | no | no |
+
+`convex/lib/funds.ts` is the single enforcement point. `assertHasDues()` is
+called from `createContribution`, `generateMonth` and `setContributionStatus`,
+so an unscheduled fund cannot acquire a grid, an arrear or a waiver even by
+accident, and `bun run check` asserts the rule against a fund of every mode.
+
+This is not a cosmetic fix. Without it, the arrears list shows nearly all 84
+cousins as defaulters every month — for the Friday fund, which nobody owes
+anything to. The numbers would be consistent with the code and completely wrong
+about the community, which is worse than no number at all.
 
 ### Why this is worth the effort
 
@@ -245,12 +371,31 @@ paying half a month all fall out naturally. None of them are special cases.
 
 ### Indexing notes
 
-- `contributions`: `(orgId, year, fundId)` for the grid
-- `ledger_entries`: `(orgId, fundId, effectiveDate)` and
-  `(orgId, bankId, effectiveDate)` for balances
-- `payments`: `(orgId, memberId, paidAt)` for the passbook
+- `contributions`: `(orgId, year, fundId)` for the grid, and
+  `(orgId, status, year)` — `by_open` — for arrears, so an arrears read is
+  proportional to the number of defaulters rather than to history
+- `ledger_entries`: `(orgId, effectiveDate)` for a year, and
+  `(orgId, fundId, effectiveDate)` for one fund's year. `by_date` and
+  `by_fund_date` are what keep a year-bounded read from becoming a full scan.
+- `payments`: `(orgId, memberId)` for the passbook
 - Every table carries `orgId`; **every** query filters on it. Enforce this in a
   shared helper so it cannot be forgotten.
+
+### Two limits worth knowing
+
+Convex has two read limits, and they bite in different places:
+
+- **16384 documents per query.** This is what a `.collect()` of the whole ledger
+  hits, and what killed M1's row lists.
+- **4096 documents read inside a mutation.** A mutation is a write transaction,
+  and the whole thing rolls back if it exceeds the budget. This is why the demo
+  reset clears one table per call and why `seed:seedHistory` takes a single year
+  — a reset that swept sixteen tables, or a seeder that back-filled eight years
+  in one call, would delete nothing and throw.
+
+`lib/balances.ts` exposes `collectAll` for the cases that genuinely must walk
+the ledger from a mutation, paging on `_creationTime` because a Convex query
+builder cannot be re-paginated once iteration has begun.
 
 ---
 

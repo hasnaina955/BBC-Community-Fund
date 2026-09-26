@@ -34,3 +34,15 @@ jobs:
 
       - name: Build
         run: bunx vite build
+
+# `bun run check`, `bun run smoke` and `bun run measure` are deliberately not
+# wired in here: all three need a running Convex backend, a seeded
+# organisation, and sign-in credentials. They are the gates that catch the
+# failures this project has actually had — the balance invariant, the
+# collection-mode rule, and the payload growing with history — so run them
+# against a local deployment after `bun run seed:history`:
+#
+#   bun run seed:history && bun run check && bun run smoke && bun run measure
+#
+# Wiring them into CI needs a hosted Convex deployment with credentials
+# injected as secrets; tracked in docs/ROADMAP.md -> M8.

@@ -12,7 +12,9 @@ import {
 import { PageHeader } from "@/components/shared/page-header"
 import { EmptyState } from "@/components/shared/stat-card"
 import { RoleBadge } from "@/components/shared/status-badge"
-import { useData } from "@/data/store"
+import { WithReadModel } from "@/components/shared/read-model"
+import { useCurrentUser } from "@/data/store"
+import { useDirectory } from "@/data/queries"
 import { ROLE_LABELS, type Role } from "@/lib/types"
 
 const CAPABILITIES: Array<{ capability: string; roles: Role[] }> = [
@@ -32,8 +34,9 @@ const CAPABILITIES: Array<{ capability: string; roles: Role[] }> = [
 const ALL_ROLES: Role[] = ["admin", "treasurer", "fund_manager", "viewer"]
 
 export default function Users() {
-  const data = useData()
-  const isAdmin = data.currentUser.role === "admin"
+  const me = useCurrentUser()
+  const model = useDirectory()
+  const isAdmin = me.role === "admin"
 
   if (!isAdmin) {
     return (
@@ -49,60 +52,62 @@ export default function Users() {
   }
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Users"
-        description="Who can see and change the books."
-      >
-        <Button size="sm" disabled title="Available in milestone M1">
-          <UserPlus className="size-4" /> Add user
-        </Button>
-      </PageHeader>
+    <WithReadModel data={model} label="Loading users">
+      {(users) => (
+        <div className="space-y-6">
+          <PageHeader
+            title="Users"
+            description="Who can see and change the books."
+          >
+            <Button size="sm" disabled title="Available in milestone M2">
+              <UserPlus className="size-4" /> Add user
+            </Button>
+          </PageHeader>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Current users</CardTitle>
-          <CardDescription>
-            {data.users.filter((u) => u.isActive).length} active of{" "}
-            {data.users.length} accounts
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.users.map((user) => (
-                <TableRow key={user.id}>
-                  <TableCell className="font-medium">
-                    {user.name}
-                    {user.id === data.currentUser.id ? (
-                      <span className="ml-2 text-xs text-muted-foreground">
-                        (you)
-                      </span>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {user.email}
-                  </TableCell>
-                  <TableCell>
-                    <RoleBadge role={user.role} />
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {user.isActive ? "Active" : "Deactivated"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Current users</CardTitle>
+              <CardDescription>
+                {users.filter((u) => u.isActive).length} active of{" "}
+                {users.length} accounts
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Role</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {users.map((user) => (
+                    <TableRow key={user.id}>
+                      <TableCell className="font-medium">
+                        {user.name}
+                        {user.id === me.id ? (
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            (you)
+                          </span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {user.email}
+                      </TableCell>
+                      <TableCell>
+                        <RoleBadge role={user.role} />
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {user.isActive ? "Active" : "Deactivated"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
 
       <Card>
         <CardHeader>
@@ -150,6 +155,8 @@ export default function Users() {
         Members are not users. They can see their own dues and pay online in
         milestone M3.
       </p>
-    </div>
+        </div>
+      )}
+    </WithReadModel>
   )
 }

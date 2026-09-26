@@ -9,6 +9,7 @@ import {
 import { recordAudit, AUDIT } from "./lib/audit"
 import { assertPaise, assertPositive, nowIso } from "./lib/money"
 import { postEntry, postTransfer } from "./lib/ledger"
+import { hasDues } from "./lib/funds"
 import { category } from "./schema"
 
 /**
@@ -227,12 +228,12 @@ export const recordPayment = mutation({
     ),
     paidAt: v.optional(v.string()),
     reference: v.optional(v.string()),
+    roundId: v.optional(v.id("collectionRounds")),
     idempotencyKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const actor = await requireTreasurer(ctx)
     assertPositive(args.amountPaise)
-
     // A replayed request must not record the money twice.
     if (args.idempotencyKey) {
       const existing = await ctx.db
@@ -251,6 +252,18 @@ export const recordPayment = mutation({
     if (args.memberId) {
       const member = await ctx.db.get(args.memberId)
       if (!member || member.orgId !== actor.orgId) throw new Error("Member not found")
+    }
+
+    // A round groups receipts for an unscheduled fund. Rejecting a round on a
+    // scheduled fund keeps the two collection styles from being mixed.
+    if (args.roundId) {
+      const round = await ctx.db.get(args.roundId)
+      if (!round || round.orgId !== actor.orgId) {
+        throw new Error("Collection session not found")
+      }
+      if (round.fundId !== args.fundId) {
+        throw new Error("That session belongs to a different fund")
+      }
     }
 
     const paidAt = args.paidAt ?? nowIso()
@@ -273,6 +286,7 @@ export const recordPayment = mutation({
       collectedBy: actor.userId,
       receiptNo,
       reference: args.reference?.trim() || undefined,
+      roundId: args.roundId,
       idempotencyKey: args.idempotencyKey,
       createdAt: Date.now(),
     })
@@ -290,9 +304,11 @@ export const recordPayment = mutation({
       note: `Payment received — ${receiptNo}`,
     })
 
-    // Settle the oldest unpaid contributions first.
+    // Settle the oldest unpaid contributions first — but only for a fund that
+    // actually has dues. On a voluntary or donation fund there is nothing to
+    // settle against, and the whole receipt is simply a gift.
     let remaining = args.amountPaise
-    if (args.memberId) {
+    if (args.memberId && hasDues(fund)) {
       const open = await ctx.db
         .query("contributions")
         .withIndex("by_member", (q) =>

@@ -15,7 +15,107 @@ import { hashSecret } from "./lib/password"
  * Run once with:  bunx convex run seed:seedDemo '{}'
  */
 
+/**
+ * Tables the demo reset sweeps, children before parents.
+ *
+ * The order matters: an entry references a payment, a payment references a
+ * member, and so on. The driver in `scripts/reset-demo.mjs` walks this list.
+ */  const RESET_ORDER = [
+  "auditLog",
+  "reconciliations",
+  "balances",
+  "ledgerEntries",
+  "payments",
+  "contributions",
+  "pledges",
+  "collectionRounds",
+  "transactions",
+  "members",
+  "funds",
+  "banks",
+] as const
+
+/**
+ * The demo staff accounts.
+ *
+ * The auth tables have no `orgId`, so a reset reaches them through the user ids
+ * the organisation owns — or, when the users have already gone, through the
+ * account rows themselves, matched on these addresses. That second path is what
+ * makes the reset recoverable after a partial run, which is exactly the state a
+ * half-finished reset leaves behind.
+ */
+const DEMO_EMAILS = [
+  "secretary@jamaat.org",
+  "treasurer@jamaat.org",
+  "bilal@jamaat.org",
+  "farhan@jamaat.org",
+  "sadia@jamaat.org",
+] as const
+
 const DEMO_PASSWORD = "community123"
+
+/**
+ * A minimal generic view of the database, used only by `resetDemo`'s sweep.
+ * Convex's typed `db.query` overloads are per-table, so a loop over a list of
+ * table names has to go through this shape instead.
+ */
+interface GenericReader {
+  query(table: string): {
+    withIndex(
+      index: string,
+      range?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+    ): { collect(): Promise<Array<Record<string, string>>> }
+    collect(): Promise<Array<Record<string, string>>>
+    take(n: number): Promise<Array<Record<string, string>>>
+  }
+  delete(id: string): Promise<void>
+}
+
+/**
+ * Delete every row of a table, a page at a time.
+ *
+ * A mutation may read at most 4096 documents, and eight years of payments is
+ * nearly 9,500, so a plain `.collect()` throws before a single row is removed.
+ * Paging is what makes the reset usable at the history length this community
+ * actually has.
+ */
+/**
+ * Rows one `wipe` call will delete.
+ *
+ * A Convex mutation may read 4096 documents in total, and every row it deletes
+ * is a row it read. The budget is set well below the limit so that a slice plus
+ * the page that finds it empty still fits. `resetDemo` returns `done: false`
+ * while rows remain and the driver simply calls it again.
+ */
+const WIPE_BUDGET = 2000
+
+async function wipe(
+  db: GenericReader,
+  table: string,
+  filter?: (row: Record<string, string>) => boolean,
+): Promise<number> {
+  let wiped = 0
+  while (wiped < WIPE_BUDGET) {
+    // `take` rather than `paginate`: Convex allows only one paginated query per
+    // function, and this has to sweep many tables.
+    const rows = await db
+      .query(table)
+      .take(Math.min(500, WIPE_BUDGET - wiped))
+    if (rows.length === 0) return wiped
+
+    let removed = 0
+    for (const row of rows) {
+      if (filter && !filter(row)) continue
+      await db.delete(row._id)
+      wiped += 1
+      removed += 1
+    }
+    // Nothing matched the filter and nothing can be removed: stop rather than
+    // loop forever on the same rows.
+    if (removed === 0) return wiped
+  }
+  return wiped
+}
 
 const FIRST_NAMES = [
   "Imran", "Yusuf", "Bilal", "Aamir", "Zahid", "Tariq", "Nadeem", "Faisal",
@@ -58,7 +158,138 @@ function rng(seed: number) {
 
 const RUPEE = 100
 const LAKH = 100000 * RUPEE
-const MEMBER_COUNT = 120
+const MEMBER_COUNT = 84
+/** The demo org's slug. The reset above refuses to touch anything else. */
+const DEMO_SLUG = "jamaat-anjuman"
+/** The monthly fund is Rs 100 per member per month. */
+const MONTHLY_DUES_PAISE = 100 * RUPEE
+
+/**
+ * Guarded reset of the demo deployment, **one table per call**.
+ *
+ * Only operates on an organisation whose slug is the demo slug, and only with
+ * the exact confirm string. This exists so the seed can be reshaped as the
+ * domain is understood better — it is not a general "wipe everything" tool, and
+ * it must be deleted before any real community data is loaded. Tracked in
+ * docs/ROADMAP.md -> M8.
+ *
+ * ## Why one table at a time
+ *
+ * A Convex mutation may read at most 4096 documents in total. Eight years of
+ * payments is 9,545, so a reset that swept every table in one call would throw
+ * before it deleted anything — the tool would be useless at exactly the history
+ * length it exists to handle. `scripts/reset-demo.mjs` drives one call per
+ * table, in the order `RESET_ORDER` declares, and repeats the call until each
+ * table reports zero.
+ *
+ *   bun run seed:reset
+ */
+export const resetDemo = mutation({
+  args: {
+    confirm: v.optional(v.string()),
+    table: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    if (args.confirm !== "wipe demo data") {
+      throw new Error('Pass { "confirm": "wipe demo data" } to run the reset')
+    }
+
+    const org = await ctx.db
+      .query("organizations")
+      .withIndex("by_slug", (q) => q.eq("slug", DEMO_SLUG))
+      .first()
+
+    if (org && org.slug !== DEMO_SLUG) {
+      throw new Error("Refusing to reset: that is not the demo organisation")
+    }
+    const orgId = org?._id
+
+    const table = args.table
+    if (!table) {
+      throw new Error(
+        `Pass a "table" to clear. Clear them in this order: ${RESET_ORDER.join(", ")}, ` +
+          "then authSessions, authRefreshTokens, authAccounts, users",
+      )
+    }
+
+    // Convex's per-table `db.query` overloads cannot express a loop over table
+    // names, so the sweep goes through the generic reader. This is the one
+    // place in the codebase that does: a reset that must be correct above all,
+    // and that docs/ROADMAP.md -> M8 deletes before real data loads.
+    const anyDb = ctx.db as unknown as GenericReader
+
+    // Convex Auth's tables carry no `orgId`. They are reached through the user
+    // ids the organisation owns, and — when those rows are already gone, which
+    // is what an interrupted reset leaves behind — through the demo account
+    // addresses themselves.
+    if (
+      table === "authSessions" ||
+      table === "authRefreshTokens" ||
+      table === "authAccounts"
+    ) {
+      const owned = new Set<string>()
+      if (orgId) {
+        for (const u of await anyDb
+          .query("users")
+          .withIndex(
+            "by_org",
+            (q: { eq: (a: string, b: unknown) => unknown }) =>
+              q.eq("orgId", orgId),
+          )
+          .collect()) {
+          owned.add(u._id)
+        }
+      }
+      if (table === "authAccounts") {
+        const emails = new Set<string>(DEMO_EMAILS)
+        for (const a of await anyDb.query("authAccounts").take(1000)) {
+          if (emails.has(a.providerAccountId)) owned.add(a.userId)
+        }
+      }
+
+      // Refresh tokens hang off a session, so the sessions are found first.
+      let sessionIds = new Set<string>()
+      if (table === "authRefreshTokens") {
+        sessionIds = new Set(
+          (await anyDb.query("authSessions").take(1000))
+            .filter((r) => owned.has(r.userId))
+            .map((r) => r._id),
+        )
+      }
+
+      const wiped = await wipe(anyDb, table, (row) =>
+        table === "authAccounts"
+          ? owned.has(row.userId)
+          : sessionIds.has(row.sessionId),
+      )
+      return { wiped, done: wiped === 0, reason: null }
+    }
+
+    if (table === "users") {
+      if (!org) {
+        return { wiped: 0, done: true, reason: "no demo organisation found" }
+      }
+      const wiped = await wipe(anyDb, "users", (row) => row.orgId === orgId)
+      // The organisation goes last, once nothing points at it.
+      if (wiped === 0) await ctx.db.delete(org._id)
+      return { wiped, done: wiped === 0, reason: null }
+    }
+
+    if (!(RESET_ORDER as readonly string[]).includes(table)) {
+      throw new Error(
+        `"${table}" is not one of ${RESET_ORDER.join(", ")}, or users`,
+      )
+    }
+    if (!org) {
+      return { wiped: 0, done: true, reason: "no demo organisation found" }
+    }
+
+    const wiped = await wipe(anyDb, table, (row) => row.orgId === orgId)
+    // `done` is true only when a call found nothing left to remove, so the
+    // driver knows a partial slice means "call me again".
+    return { wiped, done: wiped === 0, reason: null }
+  },
+})
 
 export const seedDemo = mutation({
   args: { confirm: v.optional(v.string()) },
@@ -88,7 +319,7 @@ export const seedDemo = mutation({
 
     const orgId: Id<"organizations"> = await ctx.db.insert("organizations", {
       name: "Jamaat Anjuman",
-      slug: "jamaat-anjuman",
+      slug: DEMO_SLUG,
       plan: "free",
       createdAt: now,
     })
@@ -152,12 +383,12 @@ export const seedDemo = mutation({
     const fundIds: Record<string, Id<"funds">> = {}
 
     const fundRows = [
-      { key: "contribution", name: "Member Contribution Fund", type: "operational" as const, description: "Monthly subscriptions from all active members", bankIndex: 0, target: 30 * LAKH, monthly: 500 * RUPEE },
-      { key: "zakat", name: "Zakat Fund", type: "zakat" as const, description: "Compulsory almsgiving collected during Ramadan", bankIndex: 1, target: 15 * LAKH, monthly: null },
-      { key: "charity", name: "Charity Fund", type: "charity" as const, description: "Donations and welfare disbursements", bankIndex: 0, target: 8 * LAKH, monthly: null },
-      { key: "emergency", name: "Emergency Reserve", type: "emergency" as const, description: "Held back for medical and unforeseen expenses", bankIndex: 0, target: 10 * LAKH, monthly: null },
-      { key: "renovation", name: "Mosque Renovation", type: "project" as const, description: "Phase 2 — replacing the main hall flooring", bankIndex: 2, target: 40 * LAKH, monthly: null },
-      { key: "investment", name: "Idle Investment", type: "investment" as const, description: "Surplus parked in a short-term deposit", bankIndex: 2, target: null, monthly: null },
+      { key: "contribution", name: "Monthly Contribution", type: "operational" as const, mode: "fixed_monthly" as const, description: "Rs 100 per member per month", bankIndex: 0, target: 12 * LAKH, monthly: MONTHLY_DUES_PAISE },
+      { key: "friday", name: "Friday Fund", type: "general" as const, mode: "voluntary" as const, description: "Voluntary giving after Friday prayers — any amount, any member", bankIndex: 0, target: 5 * LAKH, monthly: null },
+      { key: "reconstruction", name: "Mosque Reconstruction", type: "project" as const, mode: "pledge_based" as const, description: "Rebuilding the prayer hall and courtyard", bankIndex: 2, target: 60 * LAKH, monthly: null },
+      { key: "zakat", name: "Zakat Fund", type: "zakat" as const, mode: "donation" as const, description: "Compulsory almsgiving collected during Ramadan", bankIndex: 1, target: 15 * LAKH, monthly: null },
+      { key: "charity", name: "Charity Fund", type: "charity" as const, mode: "donation" as const, description: "Welfare disbursements and one-off gifts", bankIndex: 0, target: 8 * LAKH, monthly: null },
+      { key: "emergency", name: "Emergency Reserve", type: "emergency" as const, mode: "donation" as const, description: "Held back for medical and unforeseen expenses", bankIndex: 0, target: 10 * LAKH, monthly: null },
     ]
 
     for (const spec of fundRows) {
@@ -165,14 +396,13 @@ export const seedDemo = mutation({
         orgId,
         name: spec.name,
         type: spec.type,
+        collectionMode: spec.mode,
         description: spec.description,
         bankId: bankIds[spec.bankIndex],
-        managerId: spec.key === "renovation" || spec.key === "charity" || spec.key === "investment"
-          ? userIds[2]
-          : userIds[1],
+        managerId: spec.mode === "pledge_based" ? userIds[2] : userIds[1],
         targetAmountPaise: spec.target ?? undefined,
         isActive: true,
-        isMemberContribution: spec.monthly !== null,
+        isMemberContribution: spec.mode === "fixed_monthly",
         monthlyAmountPaise: spec.monthly ?? undefined,
         createdAt: now,
       })
@@ -203,7 +433,7 @@ export const seedDemo = mutation({
 
     const contributionFundId = fundIds.contribution
     const contributionBankId = bankIds[0]
-    const monthlyPaise = 500 * RUPEE
+    const monthlyPaise = MONTHLY_DUES_PAISE
 
     const members = await ctx.db
       .query("members")
@@ -306,12 +536,13 @@ export const seedDemo = mutation({
       { fund: "contribution", type: "withdrawal" as const, category: "operations" as const, description: "Water tanker — building dry run", amount: 9800, m: 7, d: 3, status: "approved" as const, by: 0 },
       { fund: "emergency", type: "deposit" as const, category: "donation" as const, description: "Sister society collection — medical aid", amount: 75000, m: 6, d: 22, status: "approved" as const, by: 0 },
       { fund: "emergency", type: "withdrawal" as const, category: "emergency" as const, description: "Urgent medical aid — member hospitalisation", amount: 50000, m: 7, d: 15, status: "approved" as const, by: 0 },
-      { fund: "renovation", type: "deposit" as const, category: "donation" as const, description: "Renovation pledge — Phase 2 launch", amount: 425000, m: 3, d: 21, status: "approved" as const, by: 2 },
-      { fund: "renovation", type: "withdrawal" as const, category: "maintenance" as const, description: "Floor material — first instalment", amount: 310000, m: 5, d: 27, status: "approved" as const, by: 2 },
-      { fund: "renovation", type: "withdrawal" as const, category: "maintenance" as const, description: "Contractor advance — labour", amount: 165000, m: 9, d: 12, status: "pending" as const, by: 2 },
-      { fund: "renovation", type: "withdrawal" as const, category: "maintenance" as const, description: "Marble samples and transport", amount: 42000, m: 9, d: 18, status: "pending" as const, by: 2 },
+      { fund: "reconstruction", type: "deposit" as const, category: "donation" as const, description: "Reconstruction pledge — phase 2 launch", amount: 425000, m: 3, d: 21, status: "approved" as const, by: 2 },
+      { fund: "reconstruction", type: "withdrawal" as const, category: "maintenance" as const, description: "Floor material — first instalment", amount: 310000, m: 5, d: 27, status: "approved" as const, by: 2 },
+      { fund: "reconstruction", type: "withdrawal" as const, category: "maintenance" as const, description: "Contractor advance — labour", amount: 165000, m: 9, d: 12, status: "pending" as const, by: 2 },
+      { fund: "reconstruction", type: "withdrawal" as const, category: "maintenance" as const, description: "Marble samples and transport", amount: 42000, m: 9, d: 18, status: "pending" as const, by: 2 },
+      { fund: "friday", type: "deposit" as const, category: "donation" as const, description: "Friday collection — folded into the main account", amount: 84000, m: 8, d: 1, status: "approved" as const, by: 1 },
       { fund: "contribution", type: "withdrawal" as const, category: "salary" as const, description: "Imam and muazzin stipend", amount: 36000, m: 9, d: 20, status: "pending" as const, by: 1 },
-      { fund: "renovation", type: "deposit" as const, category: "donation" as const, description: "Milestone 2 pledge collection", amount: 220000, m: 9, d: 22, status: "pending" as const, by: 2 },
+      { fund: "reconstruction", type: "deposit" as const, category: "donation" as const, description: "Milestone 2 pledge collection", amount: 220000, m: 9, d: 22, status: "pending" as const, by: 2 },
       { fund: "contribution", type: "withdrawal" as const, category: "operations" as const, description: "Water tanker — building dry run", amount: 9800, m: 8, d: 5, status: "rejected" as const, by: 1, note: "Duplicate of July entry — rejected" },
     ]
 
@@ -406,10 +637,143 @@ export const seedDemo = mutation({
     })
     ledgerSeq += 2
 
+    /* ----------------------------- Friday fund: rounds and voluntary gifts */
+
+    // The Friday fund is voluntary: there are no dues, only dated sessions and
+    // whatever people chose to give. Some gifts are anonymous, which is exactly
+    // why `memberId` is nullable.
+    const fridayFundId = fundIds.friday
+    const fridayStart = new Date(Date.UTC(year, 5, 5)).getTime()
+    const fridayBankId = bankIds[0]
+    let anonymousGifts = 0
+    let fridayRounds = 0
+
+    for (let i = 0; i < 14; i++) {
+      const date = new Date(fridayStart + i * 7 * 86400000)
+      if (date.getTime() > now) break
+      const dateIso = date.toISOString().slice(0, 10)
+
+      const roundId = await ctx.db.insert("collectionRounds", {
+        orgId,
+        fundId: fridayFundId,
+        date: dateIso,
+        label: `Friday ${date.getUTCDate()} ${date.toLocaleString("en-GB", { month: "short", timeZone: "UTC" })}`,
+        note: i % 5 === 0 ? "Ramadan month — longer session" : undefined,
+        collectedBy: userIds[1],
+        createdAt: date.getTime(),
+      })
+      fridayRounds += 1
+
+      // Four to eight people give each Friday, at irregular amounts.
+      const givers = int(4, 8)
+      for (let g = 0; g < givers; g++) {
+        // Every so often, someone gives without being named.
+        const anonymous = rand() < 0.2
+        if (anonymous) anonymousGifts += 1
+        const memberId = anonymous ? undefined : memberIds[int(0, memberIds.length - 1)]
+        const amountPaise = int(1, 15) * 100 * RUPEE
+        const paidAt = new Date(date.getTime() + 20 * 3600000).toISOString()
+
+        const paymentId = await ctx.db.insert("payments", {
+          orgId,
+          memberId,
+          fundId: fridayFundId,
+          bankId: fridayBankId,
+          amountPaise,
+          method: pick(["cash", "upi", "cash"] as const),
+          paidAt,
+          collectedBy: userIds[1],
+          receiptNo: `F-${String(++fridayRounds).padStart(4, "0")}`,
+          roundId,
+          createdAt: date.getTime(),
+        })
+
+        await ctx.db.insert("ledgerEntries", {
+          orgId,
+          fundId: fridayFundId,
+          bankId: fridayBankId,
+          memberId,
+          amountPaise,
+          direction: "credit",
+          category: "donation",
+          effectiveDate: paidAt,
+          source: "payment",
+          refType: "payment",
+          refId: paymentId,
+          note: anonymous
+            ? `Friday giving — anonymous, ${dateIso}`
+            : `Friday giving — ${dateIso}`,
+          actorId: userIds[1],
+        })
+        ledgerSeq += 1
+      }
+    }
+
+    /* --------------------------- Reconstruction: pledges against a project */
+
+    const reconstructionFundId = fundIds.reconstruction
+    const allMembers = await ctx.db
+      .query("members")
+      .withIndex("by_org", (q) => q.eq("orgId", orgId))
+      .collect()
+
+    for (const member of allMembers) {
+      if (!member.isActive) continue
+      if (rand() < 0.55) continue // not everyone pledged
+
+      const amountPledgedPaise = int(1, 60) * 1000 * RUPEE
+      const fulfilled = rand() < 0.55
+      await ctx.db.insert("pledges", {
+        orgId,
+        fundId: reconstructionFundId,
+        memberId: member._id,
+        amountPledgedPaise,
+        status: fulfilled ? "fulfilled" : "promised",
+        note: fulfilled ? undefined : "Awaiting transfer — reminded in August",
+        createdAt: now - int(30, 240) * 86400000,
+      })
+    }
+
+    /* --------------------------------- materialise balances from the ledger */
+
+    // The seeder writes ledger entries directly, so it must build the
+    // materialised balances itself — exactly what the ledger writer does during
+    // normal use. Run afterwards, this is the same thing
+    // `balances:verify` would independently confirm.
+    const allEntries = await ctx.db
+      .query("ledgerEntries")
+      .withIndex("by_date", (q) => q.eq("orgId", orgId))
+      .collect()
+    const running = new Map<string, number>()
+    for (const entry of allEntries) {
+      if (entry.fundId) {
+        const key = `fund:${entry.fundId}`
+        running.set(key, (running.get(key) ?? 0) + entry.amountPaise)
+      }
+      if (entry.bankId) {
+        const key = `bank:${entry.bankId}`
+        running.set(key, (running.get(key) ?? 0) + entry.amountPaise)
+      }
+      if (entry.memberId) {
+        const key = `member:${entry.memberId}`
+        running.set(key, (running.get(key) ?? 0) + entry.amountPaise)
+      }
+    }
+    for (const [key, amountPaise] of running) {
+      const [scope, scopeId] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)]
+      await ctx.db.insert("balances", {
+        orgId,
+        scope: scope as "fund" | "bank" | "member",
+        scopeId,
+        amountPaise,
+        updatedAt: now,
+      })
+    }
+
     /* ------------------------------------------------------ audit log */
 
     const auditSpecs: Array<[string, string, string | null, string]> = [
-      ["fund.updated", "fund", fundIds.renovation, "Renovation target raised"],
+      ["fund.updated", "fund", fundIds.reconstruction, "Reconstruction target raised"],
       ["transaction.approved", "transaction", transferTxnId, "Inter-fund transfer to idle investment"],
       ["member.updated", "member", memberIds[13], "Marked inactive — relocated"],
       ["bank.updated", "bank", bankIds[0], "Branch address corrected"],
@@ -434,8 +798,409 @@ export const seedDemo = mutation({
       funds: Object.keys(fundIds).length,
       members: memberIds.length,
       ledgerEntries: ledgerSeq,
+      balances: running.size,
+      fridayRounds,
+      anonymousGifts,
+      monthlyDues: MONTHLY_DUES_PAISE / 100,
       demoPassword: DEMO_PASSWORD,
       signInAs: staffSpecs[0].email,
+    }
+  },
+})
+
+/**
+ * Back-fill the demo organisation's real history.
+ *
+ * The community was founded in 2018 and the books were kept in a spreadsheet
+ * until now, so the real thing will have eight years of contributions, Friday
+ * collections and expenditure. Nine months of demo data is not a test of that:
+ * at eight years the ledger is around 12k entries, which is most of the way to
+ * the 16384-document limit a single Convex query can read.
+ *
+ * So this generates the history the community actually has, and the point is
+ * to then run `bun run measure` and confirm the read models do not grow with
+ * it. Only `fixed_monthly` dues get chased and collected, so old months are
+ * almost entirely paid; the Friday fund gets a round most weeks with a handful
+ * of irregular gifts, some of them anonymous.
+ *
+ * Guarded exactly like the other seed entry points: demo slug plus an explicit
+ * confirm string, and deleted before real data loads. See docs/ROADMAP.md -> M8.
+ *
+ * One year per call, because Convex allows 16000 writes in a single mutation
+ * and a year of dues for 84 members is already ~3000 documents before the
+ * Friday rounds and the spending. `bun run seed:history` drives the loop.
+ *
+ *   bunx convex run seed:seedHistory '{"confirm":"backfill history","year":2018}'
+ */
+export const seedHistory = mutation({
+  args: {
+    confirm: v.optional(v.string()),
+    year: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    if (args.confirm !== "backfill history") {
+      throw new Error('Pass { "confirm": "backfill history" } to run this')
+    }
+
+    const org = await ctx.db
+      .query("organizations")
+      .withIndex("by_slug", (q) => q.eq("slug", DEMO_SLUG))
+      .first()
+    if (!org) {
+      throw new Error("Seed the demo data first: bunx convex run seed:seedDemo")
+    }
+    const orgId = org._id
+
+    const [funds, banks, users] = await Promise.all([
+      ctx.db
+        .query("funds")
+        .withIndex("by_org", (q) => q.eq("orgId", orgId))
+        .collect(),
+      ctx.db
+        .query("banks")
+        .withIndex("by_org", (q) => q.eq("orgId", orgId))
+        .collect(),
+      ctx.db
+        .query("users")
+        .withIndex("by_org", (q) => q.eq("orgId", orgId))
+        .collect(),
+    ])
+    const byName = new Map(funds.map((f) => [f.name, f]))
+    const contributionFund = byName.get("Monthly Contribution")
+    const fridayFund = byName.get("Friday Fund")
+    const zakatFund = byName.get("Zakat Fund")
+    const charityFund = byName.get("Charity Fund")
+    const reconstructionFund = byName.get("Mosque Reconstruction")
+    if (!contributionFund || !fridayFund) {
+      throw new Error("The demo funds are not present — re-seed first")
+    }
+    const operatingBank = banks[0]
+    const userIds = users.map((u) => u._id)
+
+    const members = await ctx.db
+      .query("members")
+      .withIndex("by_org", (q) => q.eq("orgId", orgId))
+      .collect()
+    // Every member's join date is pulled back to the community's founding so
+    // the history is continuous rather than a cloud of late arrivals.
+    const founded = Math.min(...members.map((m) => m.joinedYear))
+
+    const now = Date.now()
+    const thisYear = new Date().getUTCFullYear()
+    const startYear = founded
+    const endYear = thisYear - 1
+    const target = args.year
+    if (target === undefined) {
+      throw new Error(
+        `Pass a "year" between ${startYear} and ${endYear}. One year per call: ` +
+          "Convex allows 16000 writes per mutation, and a year is already " +
+          "several thousand documents. Use `bun run seed:history` to drive it.",
+      )
+    }
+    if (target < startYear || target > endYear) {
+      throw new Error(`Year ${target} is outside ${startYear}..${endYear}`)
+    }
+    // Re-running a year would duplicate it, and the driver script may need to
+    // resume after the local deployment's write-rate limit intervenes.
+    const alreadySeeded = await ctx.db
+      .query("contributions")
+      .withIndex("by_org_year", (q) => q.eq("orgId", orgId).eq("year", target))
+      .first()
+    if (alreadySeeded) {
+      return {
+        year: target,
+        skipped: true,
+        reason: "that year is already seeded",
+      }
+    }
+    // A stable per-year seed so re-running one year reproduces the same rows.
+    const rand = rng(20180101 + target)
+    const int = (min: number, max: number) =>
+      Math.floor(rand() * (max - min + 1)) + min
+    const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rand() * arr.length)]
+
+    let contributions = 0
+    let payments = 0
+    let ledger = 0
+    let rounds = 0
+    let txnSeq = target * 1000
+
+    /**
+     * Accumulate what each ledger entry does to the materialised balances, as
+     * it is written. This is the same accounting the ledger writer performs
+     * during normal use; doing it here means the seeder never has to read the
+     * ledger back, which at eight years a mutation cannot do.
+     */
+    const running = new Map<string, number>()
+    const record = (
+      scopeId: string | undefined,
+      amountPaise: number,
+      extra?: { bankId?: string; memberId?: string },
+    ) => {
+      if (scopeId) {
+        const key = `fund:${scopeId}`
+        running.set(key, (running.get(key) ?? 0) + amountPaise)
+      }
+      if (extra?.bankId) {
+        const key = `bank:${extra.bankId}`
+        running.set(key, (running.get(key) ?? 0) + amountPaise)
+      }
+      if (extra?.memberId) {
+        const key = `member:${extra.memberId}`
+        running.set(key, (running.get(key) ?? 0) + amountPaise)
+      }
+    }
+
+    for (let y = target; y <= target; y++) {
+      /* ------------------------------ monthly dues, one row per member-month */
+      for (const member of members) {
+        if (y < member.joinedYear) continue
+        const firstMonth = y === member.joinedYear ? member.joinedMonth : 1
+
+        for (let m = firstMonth; m <= 12; m++) {
+          // Old dues were chased and collected; only the last year or so of
+          // history carries the tail of unpaid months that is still open today.
+          const paidChance = thisYear - y >= 2 ? 0.985 : 0.9
+          const roll = rand()
+          const status =
+            roll < paidChance
+              ? "paid"
+              : roll < paidChance + 0.005
+                ? "waived"
+                : "due"
+
+          await ctx.db.insert("contributions", {
+            orgId,
+            memberId: member._id,
+            fundId: contributionFund._id,
+            year: y,
+            month: m,
+            amountPaise: MONTHLY_DUES_PAISE,
+            status,
+            waivedReason:
+              status === "waived"
+                ? "Approved by committee — hardship"
+                : undefined,
+          })
+          contributions += 1
+
+          if (status !== "paid") continue
+
+          const day = int(3, 14)
+          const paidAt = new Date(Date.UTC(y, m - 1, day, 10, 30)).toISOString()
+          const method = pick(["cash", "upi", "cheque", "transfer"] as const)
+          const receiptNo = `R-${String(++txnSeq).padStart(6, "0")}`
+
+          const paymentId = await ctx.db.insert("payments", {
+            orgId,
+            memberId: member._id,
+            fundId: contributionFund._id,
+            bankId: operatingBank._id,
+            amountPaise: MONTHLY_DUES_PAISE,
+            method,
+            paidAt,
+            collectedBy: pick(userIds),
+            receiptNo,
+            reference:
+              method === "cheque"
+                ? `CHQ ${int(100000, 999999)}`
+                : method === "upi"
+                  ? `UPI${int(100000000, 999999999)}`
+                  : undefined,
+            createdAt: new Date(paidAt).getTime(),
+          })
+          payments += 1
+
+          await ctx.db.insert("ledgerEntries", {
+            orgId,
+            fundId: contributionFund._id,
+            bankId: operatingBank._id,
+            memberId: member._id,
+            amountPaise: MONTHLY_DUES_PAISE,
+            direction: "credit",
+            category: "donation",
+            effectiveDate: paidAt,
+            source: "payment",
+            refType: "payment",
+            refId: paymentId,
+            note: `Monthly contribution — ${receiptNo}`,
+            actorId: pick(userIds),
+            lockedTo: y < thisYear - 1 ? y : undefined,
+          })
+          record(contributionFund._id, MONTHLY_DUES_PAISE, {
+            bankId: operatingBank._id,
+            memberId: member._id,
+          })
+          ledger += 1
+        }
+      }
+
+      /* ---------------------------- Friday rounds, and the gifts in them */
+      for (let i = 0; i < 52; i++) {
+        const date = new Date(Date.UTC(y, 0, 2 + i * 7))
+        const dateIso = date.toISOString().slice(0, 10)
+
+        const roundId = await ctx.db.insert("collectionRounds", {
+          orgId,
+          fundId: fridayFund._id,
+          date: dateIso,
+          label: `Friday ${date.getUTCDate()} ${date.toLocaleString("en-GB", { month: "short", timeZone: "UTC" })}`,
+          collectedBy: pick(userIds),
+          createdAt: date.getTime(),
+        })
+        rounds += 1
+
+        for (let g = 0, n = int(5, 11); g < n; g++) {
+          const anonymous = rand() < 0.18
+          const giftMemberId = anonymous
+            ? undefined
+            : members[int(0, members.length - 1)]._id
+          const giftPaise = int(1, 12) * 100 * RUPEE
+          const paidAt = new Date(date.getTime() + 20 * 3600000).toISOString()
+          const paymentId = await ctx.db.insert("payments", {
+            orgId,
+            memberId: giftMemberId,
+            fundId: fridayFund._id,
+            bankId: operatingBank._id,
+            amountPaise: giftPaise,
+            method: pick(["cash", "upi", "cash"] as const),
+            paidAt,
+            collectedBy: pick(userIds),
+            receiptNo: `F-${String(rounds).padStart(4, "0")}-${g + 1}`,
+            roundId,
+            createdAt: date.getTime(),
+          })
+          payments += 1
+
+          await ctx.db.insert("ledgerEntries", {
+            orgId,
+            fundId: fridayFund._id,
+            bankId: operatingBank._id,
+            memberId: giftMemberId,
+            amountPaise: giftPaise,
+            direction: "credit",
+            category: "donation",
+            effectiveDate: paidAt,
+            source: "payment",
+            refType: "payment",
+            refId: paymentId,
+            note: anonymous
+              ? `Friday giving — anonymous, ${dateIso}`
+              : `Friday giving — ${dateIso}`,
+            actorId: pick(userIds),
+            lockedTo: y < thisYear - 1 ? y : undefined,
+          })
+          record(fridayFund._id, giftPaise, {
+            bankId: operatingBank._id,
+            memberId: giftMemberId,
+          })
+          ledger += 1
+        }
+      }
+
+      /* ------------------------------ the year's spending and its occasions */
+      const spendSpecs = [
+        { fund: zakatFund, type: "deposit" as const, category: "donation" as const, description: "Ramzan collection box", amount: 90000 + int(0, 40) * 1000, m: 4, d: 11 },
+        { fund: zakatFund, type: "deposit" as const, category: "donation" as const, description: "Eid dinner donations", amount: 70000 + int(0, 30) * 1000, m: 4, d: 18 },
+        { fund: charityFund, type: "deposit" as const, category: "donation" as const, description: "Winter blanket drive", amount: 45000 + int(0, 25) * 1000, m: 1, d: 20 },
+        { fund: contributionFund, type: "withdrawal" as const, category: "maintenance" as const, description: "Hall deep clean and pest control", amount: 22000 + int(0, 8) * 1000, m: 2, d: 6 },
+        { fund: contributionFund, type: "withdrawal" as const, category: "salary" as const, description: "Imam and muazzin stipend", amount: 33000 + int(0, 6) * 1000, m: 9, d: 20 },
+        { fund: contributionFund, type: "withdrawal" as const, category: "operations" as const, description: "Electricity bill", amount: 36000 + int(0, 14) * 1000, m: 6, d: 8 },
+        { fund: contributionFund, type: "withdrawal" as const, category: "operations" as const, description: "Water tanker", amount: 8000 + int(0, 4) * 1000, m: 7, d: 3 },
+        { fund: reconstructionFund, type: "deposit" as const, category: "donation" as const, description: "Reconstruction pledge instalment", amount: 250000 + int(0, 90) * 1000, m: 3, d: 21 },
+        { fund: reconstructionFund, type: "withdrawal" as const, category: "maintenance" as const, description: "Material and labour", amount: 180000 + int(0, 70) * 1000, m: 6, d: 14 },
+      ]
+      for (const spec of spendSpecs) {
+        if (!spec.fund) continue
+        const amountPaise = spec.amount * RUPEE
+        const date = new Date(Date.UTC(y, spec.m - 1, spec.d, 11, 0)).toISOString()
+        const txnId = await ctx.db.insert("transactions", {
+          orgId,
+          fundId: spec.fund._id,
+          type: spec.type,
+          amountPaise,
+          description: spec.description,
+          category: spec.category,
+          status: "approved",
+          requestedBy: pick(userIds),
+          approvedBy: pick(userIds),
+          transactionDate: date,
+          createdAt: new Date(date).getTime(),
+        })
+        const fundBank =
+          banks.find((b) => b._id === spec.fund?.bankId) ?? operatingBank
+        await ctx.db.insert("ledgerEntries", {
+          orgId,
+          fundId: spec.fund._id,
+          bankId: fundBank._id,
+          amountPaise: spec.type === "deposit" ? amountPaise : -amountPaise,
+          direction: spec.type === "deposit" ? "credit" : "debit",
+          category: spec.category,
+          effectiveDate: date,
+          source: "transaction",
+          refType: "transaction",
+          refId: txnId,
+          note: spec.description,
+          actorId: pick(userIds),
+          lockedTo: y < thisYear - 1 ? y : undefined,
+        })
+        record(spec.fund._id, spec.type === "deposit" ? amountPaise : -amountPaise, {
+          bankId: fundBank._id,
+        })
+        ledger += 1
+      }
+    }
+
+    // `thisYear` is already fully seeded by `seedDemo`, so the loop above
+    // deliberately stops at `endYear`.
+
+    // Materialise the balances for everything this year wrote.
+    //
+    // The running map is accumulated as the rows are written rather than by
+    // re-reading the ledger afterwards: a mutation may read 4096 documents, and
+    // by the last year of history the ledger alone is well past that. This is
+    // exactly what the ledger writer does during normal use, and
+    // `balances:verify` then confirms the invariant independently.
+    const existingBalances = await ctx.db
+      .query("balances")
+      .withIndex("by_org", (q) => q.eq("orgId", orgId))
+      .collect()
+    const existing = new Map(
+      existingBalances.map((r) => [`${r.scope}:${r.scopeId}`, r]),
+    )
+
+    // `running` holds this year's *deltas*, so an existing balance is moved by
+    // the delta rather than replaced by it.
+    for (const [key, deltaPaise] of running) {
+      const row = existing.get(key)
+      if (row) {
+        if (deltaPaise === 0) continue
+        await ctx.db.patch(row._id, {
+          amountPaise: row.amountPaise + deltaPaise,
+          updatedAt: now,
+        })
+        continue
+      }
+      const index = key.indexOf(":")
+      await ctx.db.insert("balances", {
+        orgId,
+        scope: key.slice(0, index) as "fund" | "bank" | "member",
+        scopeId: key.slice(index + 1),
+        amountPaise: deltaPaise,
+        updatedAt: now,
+      })
+    }
+
+    return {
+      orgId,
+      year: target,
+      from: startYear,
+      to: endYear,
+      contributions,
+      payments,
+      ledgerEntriesAdded: ledger,
+      fridayRounds: rounds,
+      balances: running.size,
     }
   },
 })
