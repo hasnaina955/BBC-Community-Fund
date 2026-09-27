@@ -2,6 +2,7 @@ import { mutation } from "./_generated/server"
 import { v } from "convex/values"
 import type { Id } from "./_generated/dataModel"
 import { hashSecret } from "./lib/password"
+import { truthFromEntries } from "./lib/balances"
 
 /**
  * Demo seeder — milestone M1.
@@ -50,6 +51,8 @@ const DEMO_EMAILS = [
   "bilal@jamaat.org",
   "farhan@jamaat.org",
   "sadia@jamaat.org",
+  "imran@example.org",
+  "ayesha@example.org",
 ] as const
 
 const DEMO_PASSWORD = "community123"
@@ -410,24 +413,81 @@ export const seedDemo = mutation({
 
     /* --------------------------------------------------------- members */
 
+    // The first two members are fixed rather than generated, because M3's portal
+    // is only demonstrable if there is a member with a real, matching email
+    // address. Everything else here is random; these two rows are what let
+    // `bun run visual` sign in as a member and see a real balance.
+    //
+    //   imran  — has an account, already linked. The happy path.
+    //   ayesha — has an account, *not* linked. The self-claim path, including
+    //            the claim screen and the treasurer's "still to claim" list.
+    const PORTAL_MEMBERS = [
+      { name: "Imran Shaikh", email: "imran@example.org" },
+      { name: "Ayesha Khan", email: "ayesha@example.org" },
+    ] as const
+
     const memberIds: Id<"members">[] = []
     for (let i = 0; i < MEMBER_COUNT; i++) {
-      const name = `${FIRST_NAMES[i % FIRST_NAMES.length]} ${pick(LAST_NAMES)}`
+      const portal = PORTAL_MEMBERS[i]
+      const name = portal ? portal.name : `${FIRST_NAMES[i % FIRST_NAMES.length]} ${pick(LAST_NAMES)}`
       const joinedYear = rand() < 0.12 ? year - 1 : year - int(3, 12)
       const joinedMonth = rand() < 0.12 ? int(7, 9) : int(1, 6)
       const id = await ctx.db.insert("members", {
         orgId,
         name,
         phone: `9${int(100000000, 899999999)}`,
-        email: rand() < 0.55 ? `${name.split(" ")[0].toLowerCase()}${i + 1}@example.org` : undefined,
+        email: portal
+          ? portal.email
+          : rand() < 0.55
+            ? `${name.split(" ")[0].toLowerCase()}${i + 1}@example.org`
+            : undefined,
         relation: pick(RELATIONS),
         joinedYear,
         joinedMonth,
-        isActive: rand() < 0.94,
+        isActive: true,
         createdAt: now,
       })
       memberIds.push(id)
     }
+
+    /* --------------------------------------------- member portal accounts */
+
+    // Two `member`-role accounts. This is the first role in the system that is
+    // signed in but is *not* on the committee, and it is the one that makes the
+    // console's `requireConsole` gate meaningful: these two can reach the portal
+    // and nothing else.
+    //
+    // Imran is linked to his record. Ayesha is deliberately *not*, so the claim
+    // flow has something real to act on — and so the treasurer's screen has a
+    // genuine "cannot see their own balance" row rather than a filtered-out one.
+    const memberUserId = await ctx.db.insert("users", {
+      name: "Imran Shaikh",
+      email: "imran@example.org",
+      orgId,
+      role: "member",
+      isActive: true,
+    })
+    await ctx.db.insert("authAccounts", {
+      userId: memberUserId,
+      provider: "password",
+      providerAccountId: "imran@example.org",
+      secret,
+    })
+    await ctx.db.patch(memberIds[0], { userId: memberUserId })
+
+    const unclaimedUserId = await ctx.db.insert("users", {
+      name: "Ayesha Khan",
+      email: "ayesha@example.org",
+      orgId,
+      role: "member",
+      isActive: true,
+    })
+    await ctx.db.insert("authAccounts", {
+      userId: unclaimedUserId,
+      provider: "password",
+      providerAccountId: "ayesha@example.org",
+      secret,
+    })
 
     /* --------------------------------------- contributions, payments, ledger */
 
@@ -744,26 +804,24 @@ export const seedDemo = mutation({
       .query("ledgerEntries")
       .withIndex("by_date", (q) => q.eq("orgId", orgId))
       .collect()
-    const running = new Map<string, number>()
-    for (const entry of allEntries) {
-      if (entry.fundId) {
-        const key = `fund:${entry.fundId}`
-        running.set(key, (running.get(key) ?? 0) + entry.amountPaise)
-      }
-      if (entry.bankId) {
-        const key = `bank:${entry.bankId}`
-        running.set(key, (running.get(key) ?? 0) + entry.amountPaise)
-      }
-      if (entry.memberId) {
-        const key = `member:${entry.memberId}`
-        running.set(key, (running.get(key) ?? 0) + entry.amountPaise)
-      }
-    }
+    // `truthFromEntries` is the single definition of which scopes an entry moves.
+    // The seeder used to keep its own copy of that list — fund, bank, member —
+    // and M2d added a fourth scope, `bank_year`, without the seeder following.
+    // The result was that a freshly seeded deployment failed `bun run check` with
+    // three `bank_year` mismatches, and the only reason it went unnoticed is that
+    // this workspace's data had been through `balances:backfill` by hand.
+    //
+    // Duplicating the scope rules is exactly what that function's own comment
+    // warns against ("that duplication is how a scope quietly stops being
+    // verified"), so the seeder now calls it instead of restating it.
+    const running = truthFromEntries(allEntries)
     for (const [key, amountPaise] of running) {
-      const [scope, scopeId] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)]
+      const separator = key.indexOf(":")
+      const scope = key.slice(0, separator)
+      const scopeId = key.slice(separator + 1)
       await ctx.db.insert("balances", {
         orgId,
-        scope: scope as "fund" | "bank" | "member",
+        scope: scope as "fund" | "bank" | "bank_year" | "member",
         scopeId,
         amountPaise,
         updatedAt: now,
@@ -930,25 +988,31 @@ export const seedHistory = mutation({
      * it is written. This is the same accounting the ledger writer performs
      * during normal use; doing it here means the seeder never has to read the
      * ledger back, which at eight years a mutation cannot do.
+     *
+     * The four scopes here are exactly the four `truthFromEntries` produces,
+     * which `bun run check` then verifies against. They have to agree: a scope
+     * that is written here but not verified there (or the reverse) is a scope
+     * that silently stops being trustworthy. `bank_year` was the one this helper
+     * forgot, and the symptom was 24 mismatches after back-filling eight years —
+     * a historical bank passbook working from a materialised movement total that
+     * was zero for every year before 2026.
      */
     const running = new Map<string, number>()
     const record = (
       scopeId: string | undefined,
       amountPaise: number,
-      extra?: { bankId?: string; memberId?: string },
+      extra?: { bankId?: string; memberId?: string; year?: number },
     ) => {
-      if (scopeId) {
-        const key = `fund:${scopeId}`
+      const add = (key: string) =>
         running.set(key, (running.get(key) ?? 0) + amountPaise)
-      }
+      if (scopeId) add(`fund:${scopeId}`)
       if (extra?.bankId) {
-        const key = `bank:${extra.bankId}`
-        running.set(key, (running.get(key) ?? 0) + amountPaise)
+        add(`bank:${extra.bankId}`)
+        if (extra.year !== undefined) {
+          add(`bank_year:${extra.bankId}:${extra.year}`)
+        }
       }
-      if (extra?.memberId) {
-        const key = `member:${extra.memberId}`
-        running.set(key, (running.get(key) ?? 0) + amountPaise)
-      }
+      if (extra?.memberId) add(`member:${extra.memberId}`)
     }
 
     for (let y = target; y <= target; y++) {
@@ -1030,6 +1094,7 @@ export const seedHistory = mutation({
           record(contributionFund._id, MONTHLY_DUES_PAISE, {
             bankId: operatingBank._id,
             memberId: member._id,
+            year: y,
           })
           ledger += 1
         }
@@ -1093,6 +1158,7 @@ export const seedHistory = mutation({
           record(fridayFund._id, giftPaise, {
             bankId: operatingBank._id,
             memberId: giftMemberId,
+            year: y,
           })
           ledger += 1
         }
@@ -1146,6 +1212,7 @@ export const seedHistory = mutation({
         })
         record(spec.fund._id, spec.type === "deposit" ? amountPaise : -amountPaise, {
           bankId: fundBank._id,
+          year: y,
         })
         ledger += 1
       }
@@ -1184,7 +1251,7 @@ export const seedHistory = mutation({
       const index = key.indexOf(":")
       await ctx.db.insert("balances", {
         orgId,
-        scope: key.slice(0, index) as "fund" | "bank" | "member",
+        scope: key.slice(0, index) as "fund" | "bank" | "bank_year" | "member",
         scopeId: key.slice(index + 1),
         amountPaise: deltaPaise,
         updatedAt: now,

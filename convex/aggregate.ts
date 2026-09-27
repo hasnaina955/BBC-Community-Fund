@@ -2,7 +2,12 @@ import { query } from "./_generated/server"
 import { v } from "convex/values"
 import type { Id } from "./_generated/dataModel"
 import type { QueryCtx } from "./_generated/server"
-import { requireMember } from "./lib/authz"
+// Every read model in this file belongs to the committee console, so the gate is
+// `requireConsole`, not the permissive `requireMember`. The import is aliased
+// rather than rewritten at all 18 call sites so that a query added here later
+// cannot accidentally pick up the weaker gate: the safe default is the only name
+// this file can call. See `requireConsole` in lib/authz.ts.
+import { requireConsole as requireMember } from "./lib/authz"
 import { readAllBalances } from "./lib/balances"
 import { ageDues, oldestDuePerMember } from "./lib/arrears"
 import { entriesBetween, nextYearStart, yearStart } from "./lib/ledger"
@@ -121,7 +126,7 @@ export const shell = query({
     const actor = await requireMember(ctx)
     const balances = await readAllBalances(ctx.db, actor.orgId)
 
-    const [funds, banks, members, pending] = await Promise.all([
+    const [funds, banks, members, pending, paymentRequests] = await Promise.all([
       ctx.db
         .query("funds")
         .withIndex("by_org", (q) => q.eq("orgId", actor.orgId))
@@ -136,6 +141,15 @@ export const shell = query({
         .collect(),
       ctx.db
         .query("transactions")
+        .withIndex("by_org_status", (q) =>
+          q.eq("orgId", actor.orgId).eq("status", "pending"),
+        )
+        .collect(),
+      // A claimed payment is a separate queue from a transaction approval, and it
+      // is the one that rots: the member has handed over cash and is waiting.
+      // Counted here so the sidebar can badge it.
+      ctx.db
+        .query("paymentRequests")
         .withIndex("by_org_status", (q) =>
           q.eq("orgId", actor.orgId).eq("status", "pending"),
         )
@@ -168,6 +182,7 @@ export const shell = query({
       orgName: (await ctx.db.get(actor.orgId))?.name ?? "",
       totalBalance,
       pendingCount: pending.length,
+      paymentRequestCount: paymentRequests.length,
       memberCount: members.filter((m) => m.isActive).length,
       bankCount: banks.length,
       arrearsCount: new Set(realArrears.map((c) => c.memberId)).size,

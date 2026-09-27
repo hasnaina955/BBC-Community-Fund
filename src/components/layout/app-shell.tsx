@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react"
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
+import { useQuery } from "convex/react"
 import { useAuthActions } from "@convex-dev/auth/react"
+import { api } from "../../../convex/_generated/api"
 import {
   Banknote,
   Building2,
   CheckCircle2,
   ChevronRight,
+  HandCoins,
   LayoutDashboard,
   ListChecks,
   LogOut,
@@ -14,11 +17,13 @@ import {
   Scale,
   Settings,
   Sun,
+  UserRound,
   Users,
   Wallet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useCurrentUser, useShell } from "@/data/store"
+import { useCurrentUser } from "@/data/store"
+import { FullPageLoader } from "@/components/layout/full-page-loader"
 import { Button } from "@/components/ui/button"
 import { formatPaiseCompact } from "@/lib/format"
 import { Avatar } from "@/components/ui/avatar"
@@ -36,12 +41,14 @@ const NAV = [
   { to: "/contributions", label: "Contributions", icon: Banknote },
   { to: "/transactions", label: "Transactions", icon: Wallet },
   { to: "/approvals", label: "Approvals", icon: ListChecks, badge: "pending" },
+  { to: "/payment-requests", label: "Claimed payments", icon: HandCoins, badge: "requests" },
   { to: "/banks", label: "Banks", icon: Building2 },
   { to: "/reconciliation", label: "Reconciliation", icon: Scale },
   { to: "/reports", label: "Reports", icon: CheckCircle2 },
 ] as const
 
 const NAV_ADMIN = [
+  { to: "/member-accounts", label: "Member accounts", icon: UserRound },
   { to: "/users", label: "Users", icon: Users },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const
@@ -66,7 +73,13 @@ export function AppShell() {
   // The shell read model: org totals, the arrears count (fixed_monthly funds
   // only) and the pending-approval badge. Computed on the server, so this is a
   // few hundred bytes rather than the whole ledger.
-  const shell = useShell()
+  //
+  // Subscribed here rather than in the app-wide `DataProvider` on purpose. It is
+  // org-wide committee data, and a plain member must not receive it merely for
+  // signing in — which is exactly what a provider that wrapped the whole app
+  // would have done. Only this component mounts for a committee member, and the
+  // server refuses the query outright for a `member` role.
+  const shell = useQuery(api.aggregate.shell)
   const location = useLocation()
   const navigate = useNavigate()
   const { dark, toggle } = useTheme()
@@ -80,7 +93,18 @@ export function AppShell() {
   }
 
   const isAdmin = me.role === "admin"
+
+  // Every hook above has run; only now is it safe to bail out. Returning earlier
+  // would make the hook order depend on the query, which React does not allow.
+  if (!shell) return <FullPageLoader label="Loading the books" />
+
   const pendingCount = shell.pendingCount
+  // Members claiming they have paid is a second, separate queue from transaction
+  // approvals, and it is the one that ages badly: a claim sits in someone's
+  // pocket until somebody acts on it. It gets its own badge rather than being
+  // folded into the approvals count, because the two are confirmed by different
+  // people in different ways.
+  const requestCount = shell.paymentRequestCount
 
   const renderNav = (
     items: readonly {
@@ -92,7 +116,8 @@ export function AppShell() {
     }[],
   ) =>
     items.map(({ to, label, icon: Icon, end, badge }) => {
-      const count = badge === "pending" ? pendingCount : 0
+      const count =
+        badge === "pending" ? pendingCount : badge === "requests" ? requestCount : 0
       return (
         <NavLink
           key={to}
@@ -128,7 +153,7 @@ export function AppShell() {
   return (
     <div className="flex min-h-screen bg-background">
       {/* Sidebar */}
-      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar lg:flex">
+      <aside className="cf-chrome sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar lg:flex">
         <div className="flex h-16 items-center gap-2.5 px-5">
           <div className="flex size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground">
             CF
@@ -203,7 +228,7 @@ export function AppShell() {
       {/* Content */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile header */}
-        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur lg:hidden">
+        <header className="cf-chrome sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur lg:hidden">
           <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground">
             CF
           </div>

@@ -1,6 +1,7 @@
 import { useQuery } from "convex/react"
 import { api } from "../../convex/_generated/api"
 import type { Id } from "../../convex/_generated/dataModel"
+import { yearsInRange } from "@/data/period"
 
 /**
  * One hook per screen, one Convex query per hook.
@@ -126,6 +127,25 @@ export function useReports(year: number) {
   return useQuery(api.aggregate.reports, { year })
 }
 
+/* -------------------------------------------------------------- year range */
+
+/**
+ * Which years the year pickers may offer.
+ *
+ * Backed by the console's org summary, which is where the range is derived. All
+ * three callers ask for the identical query with identical arguments, so Convex
+ * serves them one subscription and one payload rather than three — subscribing to
+ * the whole summary here is not the same cost as three separate fetches.
+ *
+ * Returns `undefined` while loading, so a screen must handle that; the fallbacks
+ * at the call sites all collapse to the current year, which is the only year
+ * guaranteed to exist.
+ */
+export function useYearRange(): number[] | undefined {
+  const shell = useQuery(api.aggregate.shell)
+  return shell ? yearsInRange(shell.yearRange.from, shell.yearRange.to) : undefined
+}
+
 /* --------------------------------------------------- directory and audit */
 
 export function useDirectory() {
@@ -134,4 +154,59 @@ export function useDirectory() {
 
 export function useAuditLog() {
   return useQuery(api.aggregate.audit, { limit: 60 })
+}
+
+/* --------------------------------------------------------- member portal */
+
+/**
+ * The three questions the portal has to answer before it can draw anything: am I
+ * linked to a member record, what do I owe, and what have I asked for.
+ *
+ * `myAccount` is separate from `summary` on purpose. `summary` returns `null` for
+ * an unlinked account, which is a legitimate state and not a failure — so the
+ * claim screen needs to ask "am I linked?" without having to distinguish that
+ * `null` from a query that has not resolved yet or one that threw.
+ */
+export function useMyAccount() {
+  return useQuery(api.portal.myAccount)
+}
+
+/** What I owe, month by month, with the receipts behind it. Null until claimed. */
+export function usePortalSummary() {
+  return useQuery(api.portal.summary)
+}
+
+/**
+ * The full passbook: every month ever charged and every payment ever received.
+ *
+ * Separate from `usePortalSummary` because the screen caps its receipt list and
+ * the document must not. See `portal:statement`.
+ */
+export function useStatement() {
+  return useQuery(api.portal.statement)
+}
+
+/** One receipt, for the printable document. Null when it is not the caller's. */
+export function useReceipt(paymentId: string | null) {
+  return useQuery(
+    api.receipts.receiptData,
+    paymentId ? { paymentId: paymentId as Id<"payments"> } : "skip",
+  )
+}
+
+/** Payments I have claimed, and what the treasurer decided about them. */
+export function useMyRequests() {
+  return useQuery(api.portal.myRequests)
+}
+
+/* ------------------------------------------- treasurer: the portal's back office */
+
+/** Who has a portal account, and who cannot see their own balance because of it. */
+export function useAccountStatus() {
+  return useQuery(api.portal.accountStatus)
+}
+
+/** Cash collected offline that members have claimed, waiting to be confirmed. */
+export function usePaymentRequests() {
+  return useQuery(api.portal.requestsQueue)
 }

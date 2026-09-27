@@ -58,8 +58,25 @@ const AGGREGATES = [
   ["aggregate:audit", { limit: 60 }, "Settings"],
 ]
 
-const RAW = [
-  ["data:listLedgerEntries", {}, "M1: every ledger entry"],
+/**
+ * The member portal's read models, measured in the member's own session.
+ *
+ * A separate table, and a separate session, for a reason that is easy to get
+ * wrong: these queries are gated to `members.userId`, so the committee token
+ * above cannot call them at all, and adding their bytes to the console total
+ * would compare two different applications. The number that matters here is
+ * different too — the portal runs on a phone, so what is being checked is that
+ * one member's whole history is small enough to read on a slow connection.
+ */
+const PORTAL = [
+  ["portal:myAccount", {}, "Claim / link state"],
+  ["portal:summary", {}, "What I owe"],
+  ["portal:statement", {}, "The passbook statement"],
+  ["portal:myRequests", {}, "My payment claims"],
+  ["receipts:receiptData", { paymentId: "@payment" }, "One printable receipt"],
+]
+
+const RAW = [  ["data:listLedgerEntries", {}, "M1: every ledger entry"],
   ["data:listContributions", {}, "M1: every contribution"],
   ["data:listPayments", {}, "M1: every payment"],
   ["data:listMembers", { includeInactive: true }, "M1: members"],
@@ -75,10 +92,27 @@ const RAW = [
 const funds = await call("aggregate:funds", {}, token)
 const banks = await call("aggregate:banks", {}, token)
 const members = await call("aggregate:members", { filter: "all" }, token)
+
+// The portal has its own session: its read models are scoped to the caller's own
+// member record and refuse a committee token outright.
+const memberSignIn = await call("auth:signIn", {
+  provider: "password",
+  params: {
+    flow: "signIn",
+    email: process.env.DEMO_MEMBER_EMAIL ?? "imran@example.org",
+    password: PASSWORD,
+  },
+})
+const memberToken = memberSignIn.value?.tokens?.token
+const memberSummary = memberToken
+  ? await call("portal:summary", {}, memberToken)
+  : { value: null }
+
 const ids = {
   "@fund": funds.value?.[0]?.id,
   "@bank": banks.value?.[0]?.id,
   "@member": members.value?.[0]?.id,
+  "@payment": memberSummary.value?.receipts?.[0]?.id,
 }
 
 const fill = (args) =>
@@ -86,8 +120,8 @@ const fill = (args) =>
     Object.entries(args).map(([k, v]) => [k, typeof v === "string" && v.startsWith("@") ? ids[v] : v]),
   )
 
-const measure = async ([path, args, screen]) => {
-  const res = await call(path, fill(args), token)
+const measureAs = (jwt) => async ([path, args, screen]) => {
+  const res = await call(path, fill(args), jwt)
   if (res.status !== "success") {
     // Worth showing rather than counting as zero: at eight years of history the
     // M1 row lists do not get slow, they stop working at all.
@@ -96,6 +130,9 @@ const measure = async ([path, args, screen]) => {
   const bytes = Buffer.byteLength(JSON.stringify(res.value ?? null))
   return { path, screen, bytes }
 }
+
+const measure = measureAs(token)
+const measurePortal = measureAs(memberToken)
 
 const kb = (n) => `${(n / 1024).toFixed(1)} kB`
 const cell = (n) => kb(n).padStart(9)
@@ -123,6 +160,24 @@ for (const r of rows.sort((a, b) => b.bytes - a.bytes)) {
 console.log(rule)
 console.log(`    ${cell(total)}  TOTAL  (${total.toLocaleString()} bytes)\n`)
 
+console.log("  The member portal, in a member's own session (M3)\n")
+const portalRows = []
+let portalTotal = 0
+for (const entry of PORTAL) {
+  const m = await measurePortal(entry)
+  portalRows.push(m)
+  portalTotal += m.bytes
+}
+for (const r of portalRows.sort((a, b) => b.bytes - a.bytes)) {
+  if (r.error) {
+    console.log(`    ${"FAILED".padStart(9)}  ${r.path.padEnd(30)} ${r.error}`)
+  } else {
+    console.log(`    ${cell(r.bytes)}  ${r.path.padEnd(30)} ${r.screen}`)
+  }
+}
+console.log(rule)
+console.log(`    ${cell(portalTotal)}  TOTAL  (${portalTotal.toLocaleString()} bytes)\n`)
+
 console.log("  What milestone M1 downloaded for the same app\n")
 for (const r of raw.sort((a, b) => b.bytes - a.bytes)) {
   if (r.error) {
@@ -144,5 +199,8 @@ console.log(
         `  would not load rather than merely load slowly.\n`
       : "") +
     `  The aggregate side does not grow with history: the largest read model is the\n` +
-    `  collection grid, which is one year of member-months (84 x 12), not the ledger.\n`,
+    `  collection grid, which is one year of member-months (84 x 12), not the ledger.\n` +
+    `  The portal's total above is one member's entire history — every month charged\n` +
+    `  and every payment received — which is the number that has to stay small\n` +
+    `  enough to read on a phone.\n`,
 )

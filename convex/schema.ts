@@ -181,6 +181,13 @@ export default defineSchema({
 
   members: defineTable({
     orgId: v.id("organizations"),
+    /**
+     * The signed-in account this member row belongs to, once claimed or
+     * assigned. Milestone M3: this is the join between Convex Auth's identity
+     * and the community's own record of a person, and it is what the portal
+     * reads to answer "what do I owe?" without ever being told whose record to
+     * read.
+     */
     userId: v.optional(v.id("users")),
     name: v.string(),
     phone: v.optional(v.string()),
@@ -192,7 +199,11 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_org", ["orgId"])
-    .index("by_org_user", ["orgId", "userId"]),
+    .index("by_org_user", ["orgId", "userId"])
+    // The claim path in M3 looks a member up by the email on their row, and that
+    // lookup happens on every sign-in from an unlinked account, so it is an
+    // index rather than a scan of the membership.
+    .index("by_email", ["orgId", "email"]),
 
   // The obligation: a member owes this much for this month.
   contributions: defineTable({
@@ -287,6 +298,55 @@ export default defineSchema({
     // Prefix-only scan of one organisation's entries. Used by the ledger
     // rebuild (`balances.recomputeAll`) and by the demo reset, both of which
     // need every entry and so cannot narrow to one fund, bank or year.
+    .index("by_org", ["orgId"]),
+
+  /**
+   * A member telling us they have already paid.
+   *
+   * Most collection in this community is cash handed over at a meeting or to a
+   * collector at someone's door. The money is real and the member's word is
+   * usually right, but a product holding community money cannot take someone's
+   * word for it and write it into the ledger — so this is a *request*, held
+   * until a treasurer confirms it. Approval is the moment the payment, the
+   * receipt and the ledger entry exist; until then nothing in the books moves.
+   *
+   * That is the same separation of duties `transactions` already models, applied
+   * to the case where the requester is the person who paid.
+   */
+  paymentRequests: defineTable({
+    orgId: v.id("organizations"),
+    memberId: v.id("members"),
+    fundId: v.optional(v.id("funds")),
+    amountPaise: money,
+    method: v.union(
+      v.literal("cash"),
+      v.literal("cheque"),
+      v.literal("upi"),
+      v.literal("card"),
+      v.literal("transfer"),
+    ),
+    /** When the member says they paid. ISO string, as everywhere else. */
+    paidAt: v.string(),
+    reference: v.optional(v.string()),
+    note: v.optional(v.string()),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("approved"),
+      v.literal("rejected"),
+    ),
+    requestedBy: v.id("users"),
+    decidedBy: v.optional(v.id("users")),
+    decidedAt: v.optional(v.number()),
+    decisionNote: v.optional(v.string()),
+    /** Set on approval — the payment this request became. */
+    paymentId: v.optional(v.id("payments")),
+    createdAt: v.number(),
+  })
+    .index("by_org_status", ["orgId", "status"])
+    .index("by_member", ["orgId", "memberId"])
+    // The member's own list of requests, newest first, without reading the whole
+    // org's queue.
+    .index("by_requester", ["orgId", "requestedBy", "createdAt"])
     .index("by_org", ["orgId"]),
 
   transactions: defineTable({

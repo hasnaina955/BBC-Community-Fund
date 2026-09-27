@@ -1,0 +1,51 @@
+{
+  "name": "CommunityFund — member passbook",
+  "short_name": "CommunityFund",
+  "description": "See what you owe, what you have paid, and download your receipts and passbook statement.",
+  "start_url": "/me",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#0f0e1c",
+  "lang": "en-IN",
+  "dir": "ltr",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "What I owe",
+      "short_name": "Balance",
+      "url": "/me"
+    },
+    {
+      "name": "Receipts",
+      "short_name": "Receipts",
+      "url": "/me/receipts"
+    },
+    {
+      "name": "Statement",
+      "short_name": "Statement",
+      "url": "/me/statement"
+    }
+  ]
+}

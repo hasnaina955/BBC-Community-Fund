@@ -8,6 +8,18 @@
       name="description"
       content="Track funds, collect monthly member contributions, and reconcile every rupee against the bank."
     />
+    <!--
+      The member portal is installable. The manifest is a static file in public/
+      rather than something injected, because a manifest that only exists after
+      JavaScript runs cannot be used to decide whether to show an install prompt.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="/favicon-64.png" />
+    <meta name="theme-color" content="#0f0e1c" />
+    <!-- iOS ignores the manifest for home-screen icons, so it is told directly. -->
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="CommunityFund" />
     <!-- Fonts recovered from the original build -->
     <link
       rel="preconnect"
