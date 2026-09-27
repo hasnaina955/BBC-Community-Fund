@@ -3,9 +3,14 @@ import type { Config } from "tailwindcss"
 const hsl = (v: string) => `hsl(var(${v}) / <alpha-value>)`
 
 /**
- * Tokens below are recovered verbatim from the legacy build
- * (legacy/assets/index-0GK1rzsZ.css) so the rebuild matches the original
- * design. Do not renumber them casually — see docs/RECOVERY.md.
+ * The tokens below map the custom properties declared in `src/index.css` into
+ * Tailwind's colour scale. They began as a verbatim recovery of the legacy
+ * build (legacy/assets/index-0GK1rzsZ.css — see docs/RECOVERY.md) and the
+ * *names* are still that recovery: the notes in RECOVERY.md and the stylesheet
+ * both depend on them not moving, so do not rename or renumber casually.
+ *
+ * The *values* were retuned during the UI work and are no longer the legacy
+ * ones. That rationale lives with the tokens themselves, in `src/index.css`.
  */
 export default {
   darkMode: ["class"],
@@ -35,6 +40,7 @@ export default {
           DEFAULT: hsl("--destructive"),
           foreground: hsl("--destructive-foreground"),
         },
+        success: hsl("--success"),
         muted: {
           DEFAULT: hsl("--muted"),
           foreground: hsl("--muted-foreground"),

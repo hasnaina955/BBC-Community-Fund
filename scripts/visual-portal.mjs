@@ -158,10 +158,23 @@ function watch(page, tag) {
 async function settle(page, label) {
   currentScreen = label
   await page.waitForLoadState("domcontentloaded")
+  // See the note in visual-check.mjs -> settle(): the `?? document.body` fallback
+  // made "no spinner" true before the app had mounted, so this returned before
+  // the lazy route chunk had even been requested. The claim-screen assertions
+  // then read a blank `<main>` and failed for a reason that had nothing to do
+  // with the portal. `main` arrives in the same commit as the Suspense fallback
+  // inside it, so waiting for it first is what makes the spinner check mean
+  // something.
+  try {
+    await page.waitForSelector("main", { timeout: 25_000 })
+  } catch {
+    /* recorded by the caller as a stuck loader */
+  }
   try {
     await page.waitForFunction(
       () => {
-        const main = document.querySelector("main") ?? document.body
+        const main = document.querySelector("main")
+        if (!main) return false
         return main.querySelector(".animate-spin") === null
       },
       null,

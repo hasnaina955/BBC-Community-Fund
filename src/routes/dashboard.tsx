@@ -15,6 +15,7 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Banknote,
+  CheckCheck,
   CircleAlert,
   Scale,
   Wallet,
@@ -22,14 +23,12 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { StatCard } from "@/components/shared/stat-card"
+import { Meter, rateTone } from "@/components/shared/meter"
 import { PageHeader } from "@/components/shared/page-header"
-import {
-  CollectionModeBadge,
-  FundTypeBadge,
-} from "@/components/shared/status-badge"
+import { FundTypeBadge, CollectionModeBadge } from "@/components/shared/status-badge"
 import { WithReadModel } from "@/components/shared/read-model"
 import { useDashboard } from "@/data/queries"
-import { CURRENT_MONTH } from "@/data/period"
+import { CURRENT_MONTH, CURRENT_YEAR } from "@/data/period"
 import {
   formatPaise,
   formatPaiseCompact,
@@ -46,6 +45,28 @@ const CHART_COLORS = [
   "hsl(var(--chart-4))",
   "hsl(var(--chart-5))",
 ]
+
+/**
+ * The chart tooltip's own styling, written once.
+ *
+ * It was inline in four places and had already drifted — two of them were
+ * missing the `border` key entirely, so those tooltips rendered with no border
+ * at all against a card background. A tooltip is a floating surface over
+ * content, so it has to use the popover tokens rather than the card's.
+ */
+const TOOLTIP_STYLE = {
+  background: "hsl(var(--popover))",
+  color: "hsl(var(--popover-foreground))",
+  border: "1px solid hsl(var(--popover-border))",
+  borderRadius: "0.5rem",
+  boxShadow: "var(--shadow-md)",
+  fontSize: "12px",
+} as const
+
+const AXIS_TICK = {
+  fontSize: 11,
+  fill: "hsl(var(--muted-foreground))",
+} as const
 
 /**
  * Every number on this screen arrives already computed from
@@ -72,6 +93,9 @@ export default function Dashboard() {
           .filter((f) => f.balancePaise !== 0)
           .map((f) => ({ name: f.name, value: f.balancePaise / 100 }))
 
+        const rate = data.monthStats.collectionRate
+        const tone = rateTone(rate)
+
         return (
           <div className="space-y-6">
             <PageHeader
@@ -89,6 +113,69 @@ export default function Dashboard() {
               </Button>
             </PageHeader>
 
+            {/*
+              The headline.
+
+              Four equal stat tiles gave the collection rate the same visual
+              weight as three figures nobody opens the app to read, and the rate
+              is the one number the treasurer came for — it is what the monthly
+              meeting is about. So it gets the first, widest card on the page,
+              with the money behind it spelled out, because "82%" on its own is
+              not a fact anybody can act on.
+            */}
+            <Card className="overflow-hidden">
+              <CardContent className="p-5 sm:p-6">
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <p className="cf-eyebrow">
+                      Collection · {monthLabel(CURRENT_MONTH)} {CURRENT_YEAR}
+                    </p>
+                    <p className="tabular mt-1.5 text-4xl font-semibold tracking-tight">
+                      {rate.toFixed(0)}
+                      <span className="text-2xl text-muted-foreground">%</span>
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="tabular text-sm font-medium">
+                      {formatPaise(data.monthStats.collectedPaise)}
+                    </p>
+                    <p className="tabular text-xs text-muted-foreground">
+                      of {formatPaise(data.monthStats.expectedPaise)} due
+                    </p>
+                  </div>
+                </div>
+
+                <Meter
+                  value={data.monthStats.collectedPaise}
+                  max={data.monthStats.expectedPaise}
+                  tone={tone}
+                  className="mt-4 h-2.5"
+                />
+
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>
+                    {data.monthStats.paidCount} paid ·{" "}
+                    {data.monthStats.waivedCount} waived
+                  </span>
+                  {data.monthStats.dueCount > 0 ? (
+                    <span className="font-medium text-destructive">
+                      {data.monthStats.dueCount} still to collect this month
+                    </span>
+                  ) : (
+                    <span className="font-medium text-success">
+                      Everyone has paid for {monthLabel(CURRENT_MONTH)}
+                    </span>
+                  )}
+                  {data.arrearsCount > 0 ? (
+                    <span>
+                      {data.arrearsCount} members in arrears ·{" "}
+                      {data.unpaidMonths} unpaid months
+                    </span>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard
                 label="Total across funds"
@@ -99,11 +186,11 @@ export default function Dashboard() {
               <StatCard
                 label={`Collected — ${monthLabel(CURRENT_MONTH)}`}
                 value={formatPaise(data.monthStats.collectedPaise)}
-                hint={`${data.monthStats.collectionRate.toFixed(0)}% of ${formatPaise(
+                hint={`${rate.toFixed(0)}% of ${formatPaise(
                   data.monthStats.expectedPaise,
                 )} due`}
                 icon={Banknote}
-                tone={data.monthStats.collectionRate >= 90 ? "positive" : "warning"}
+                tone={rate >= 90 ? "positive" : "warning"}
               />
               <StatCard
                 label="Inflow YTD"
@@ -157,7 +244,7 @@ export default function Dashboard() {
                             <stop
                               offset="5%"
                               stopColor="hsl(var(--chart-3))"
-                              stopOpacity={0.35}
+                              stopOpacity={0.3}
                             />
                             <stop
                               offset="95%"
@@ -175,7 +262,7 @@ export default function Dashboard() {
                             <stop
                               offset="5%"
                               stopColor="hsl(var(--chart-5))"
-                              stopOpacity={0.35}
+                              stopOpacity={0.3}
                             />
                             <stop
                               offset="95%"
@@ -193,32 +280,21 @@ export default function Dashboard() {
                           dataKey="month"
                           tickLine={false}
                           axisLine={false}
-                          tick={{
-                            fontSize: 11,
-                            fill: "hsl(var(--muted-foreground))",
-                          }}
+                          tick={AXIS_TICK}
                         />
                         <YAxis
                           tickLine={false}
                           axisLine={false}
                           width={52}
                           tickFormatter={(v: number) => `₹${(v / 1000).toFixed(0)}K`}
-                          tick={{
-                            fontSize: 11,
-                            fill: "hsl(var(--muted-foreground))",
-                          }}
+                          tick={AXIS_TICK}
                         />
                         <Tooltip
                           formatter={(value: number, name: string) => [
                             `₹${value.toLocaleString("en-IN")}`,
                             name === "inflow" ? "Inflow" : "Outflow",
                           ]}
-                          contentStyle={{
-                            background: "hsl(var(--popover))",
-                            border: "1px solid hsl(var(--popover-border))",
-                            borderRadius: "0.5rem",
-                            fontSize: "12px",
-                          }}
+                          contentStyle={TOOLTIP_STYLE}
                         />
                         <Area
                           type="monotone"
@@ -240,83 +316,89 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
 
+              {/*
+                The fund list carries each fund's collection mode inline now.
+                It used to also have a card at the bottom of the page listing
+                every fund's mode again — the same names twice, in two
+                different visual treatments, with a paragraph explaining that
+                only monthly funds can show arrears. That explanation belongs
+                with the number it qualifies, and it is on the grid screen.
+              */}
               <Card>
                 <CardHeader>
                   <CardTitle>Fund Breakdown</CardTitle>
-                  <CardDescription>Current balance by fund</CardDescription>
+                  <CardDescription>
+                    Current balance by fund, and how each is collected
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="h-40 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={breakdown}
-                        layout="vertical"
-                        margin={{ top: 0, right: 8, left: 0, bottom: 0 }}
-                      >
-                        <XAxis type="number" hide />
-                        <YAxis
-                          type="category"
-                          dataKey="name"
-                          width={120}
-                          tickLine={false}
-                          axisLine={false}
-                          tick={{
-                            fontSize: 11,
-                            fill: "hsl(var(--muted-foreground))",
-                          }}
-                        />
-                        <Tooltip
-                          formatter={(v: number) => `₹${v.toLocaleString("en-IN")}`}
-                          contentStyle={{
-                            background: "hsl(var(--popover))",
-                            border: "1px solid hsl(var(--popover-border))",
-                            borderRadius: "0.5rem",
-                            fontSize: "12px",
-                          }}
-                        />
-                        <Bar
-                          dataKey="value"
-                          radius={[0, 4, 4, 0]}
-                          barSize={14}
-                          label={{
-                            position: "right",
-                            fontSize: 10,
-                            fill: "hsl(var(--muted-foreground))",
-                            formatter: (v: number) => formatPaiseCompact(v * 100),
-                          }}
-                        >
-                          {breakdown.map((entry, i) => (
-                            <Cell
-                              key={entry.name}
-                              fill={CHART_COLORS[i % CHART_COLORS.length]}
+                  {breakdown.length === 0 ? (
+                    <p className="py-8 text-center text-sm text-muted-foreground">
+                      No fund has a balance yet.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="h-40 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={breakdown}
+                            layout="vertical"
+                            margin={{ top: 0, right: 8, left: 0, bottom: 0 }}
+                          >
+                            <XAxis type="number" hide />
+                            <YAxis
+                              type="category"
+                              dataKey="name"
+                              width={120}
+                              tickLine={false}
+                              axisLine={false}
+                              tick={AXIS_TICK}
                             />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                            <Tooltip
+                              formatter={(v: number) => `₹${v.toLocaleString("en-IN")}`}
+                              contentStyle={TOOLTIP_STYLE}
+                            />
+                            <Bar
+                              dataKey="value"
+                              radius={[0, 4, 4, 0]}
+                              barSize={14}
+                              label={{
+                                position: "right",
+                                fontSize: 10,
+                                fill: "hsl(var(--muted-foreground))",
+                                formatter: (v: number) => formatPaiseCompact(v * 100),
+                              }}
+                            >
+                              {breakdown.map((entry, i) => (
+                                <Cell
+                                  key={entry.name}
+                                  fill={CHART_COLORS[i % CHART_COLORS.length]}
+                                />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
 
-                  <div className="space-y-2.5 border-t pt-3">
-                    {breakdown.map((fund) => {
-                      const full = data.fundBreakdown.find(
-                        (f) => f.name === fund.name,
-                      )
-                      return (
-                        <div
-                          key={fund.name}
-                          className="flex items-center justify-between gap-2 text-sm"
-                        >
-                          <div className="flex min-w-0 items-center gap-2">
-                            {full ? <FundTypeBadge type={full.type} /> : null}
-                            <span className="truncate">{fund.name}</span>
-                          </div>
-                          <span className="tabular shrink-0 font-medium">
-                            {formatPaise(fund.value * 100)}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </div>
+                      <ul className="space-y-1 border-t pt-3">
+                        {data.fundBreakdown.map((fund) => (
+                          <li
+                            key={fund.id}
+                            className="flex items-center justify-between gap-2 text-sm"
+                          >
+                            <div className="flex min-w-0 flex-wrap items-center gap-2">
+                              <FundTypeBadge type={fund.type} />
+                              <CollectionModeBadge mode={fund.collectionMode} />
+                              <span className="truncate">{fund.name}</span>
+                            </div>
+                            <span className="tabular shrink-0 font-medium">
+                              {formatPaise(fund.balancePaise)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -331,15 +413,18 @@ export default function Dashboard() {
                 </CardHeader>
                 <CardContent className="space-y-2.5">
                   {data.pending.length === 0 ? (
-                    <p className="py-8 text-center text-sm text-muted-foreground">
-                      All caught up!
-                    </p>
+                    <div className="flex flex-col items-center gap-2 py-8 text-center">
+                      <CheckCheck className="size-6 text-success" />
+                      <p className="text-sm text-muted-foreground">
+                        Nothing waiting. Every transaction has been decided.
+                      </p>
+                    </div>
                   ) : (
                     data.pending.map((txn) => (
                       <Link
                         key={txn.id}
                         to="/approvals"
-                        className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/60"
+                        className="cf-lift flex items-center gap-3 rounded-lg border p-3"
                       >
                         <div
                           className={`rounded-lg p-2 ${
@@ -383,29 +468,35 @@ export default function Dashboard() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2.5">
-                  {data.recent.map((entry) => (
-                    <div key={entry.id} className="flex items-center gap-3 text-sm">
-                      <Scale
-                        className={`size-3.5 shrink-0 ${
-                          entry.isCredit ? "text-chart-3" : "text-muted-foreground"
-                        }`}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate">{entry.note}</p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {entry.fundName} · {formatDate(entry.date)}
-                        </p>
+                  {data.recent.length === 0 ? (
+                    <p className="py-8 text-center text-sm text-muted-foreground">
+                      No entries have been written yet.
+                    </p>
+                  ) : (
+                    data.recent.map((entry) => (
+                      <div key={entry.id} className="flex items-center gap-3 text-sm">
+                        <Scale
+                          className={`size-3.5 shrink-0 ${
+                            entry.isCredit ? "text-chart-3" : "text-muted-foreground"
+                          }`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate">{entry.note}</p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {entry.fundName} · {formatDate(entry.date)}
+                          </p>
+                        </div>
+                        <span
+                          className={`tabular shrink-0 font-medium ${
+                            entry.isCredit ? "text-chart-3" : "text-destructive"
+                          }`}
+                        >
+                          {entry.isCredit ? "+" : "−"}
+                          {formatPaise(Math.abs(entry.amountPaise))}
+                        </span>
                       </div>
-                      <span
-                        className={`tabular shrink-0 font-medium ${
-                          entry.isCredit ? "text-chart-3" : "text-destructive"
-                        }`}
-                      >
-                        {entry.isCredit ? "+" : "−"}
-                        {formatPaise(Math.abs(entry.amountPaise))}
-                      </span>
-                    </div>
-                  ))}
+                    ))
+                  )}
                   <p className="border-t pt-3 text-xs text-muted-foreground">
                     Monthly dues collected this year:{" "}
                     {percent(
@@ -418,26 +509,6 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
             </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>How each fund is collected</CardTitle>
-                <CardDescription>
-                  Only funds collected as a fixed monthly amount can show arrears
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-wrap gap-2">
-                {data.fundBreakdown.map((fund) => (
-                  <span
-                    key={fund.id}
-                    className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-sm"
-                  >
-                    <CollectionModeBadge mode={fund.collectionMode} />
-                    <span className="truncate">{fund.name}</span>
-                  </span>
-                ))}
-              </CardContent>
-            </Card>
           </div>
         )
       }}

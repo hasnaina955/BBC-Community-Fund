@@ -365,6 +365,57 @@ that cannot fail is not a test.
   meet in practice — a bad id in the URL — is asserted, and is caught by the error
   boundary with the sidebar intact.
 
+## `visual:ui` — the phone, and the palette
+
+`bun run visual:ui` (30 assertions) is a third, separate suite. The other two
+drive a desktop viewport, which is precisely why a console with **no navigation
+at all below the `lg` breakpoint** could pass 217 console assertions, 71 portal
+assertions, 30 smoke checks and 74 security checks. The sidebar is
+`hidden lg:flex`; the phone header carried the logo, the theme toggle and a
+sign-out button. A treasurer on a phone could open the app, see the dashboard,
+and reach none of the other twelve routes. Nothing failed, because the app was
+working exactly as it had been built.
+
+It also checks the theme in both applications, and measures contrast from the
+computed style in both themes rather than asserting it by hand.
+
+### Three findings
+
+1. **The portal's theme toggle never persisted.** `useTheme` existed twice — once
+   in each shell — and the portal's copy set the class but never wrote
+   `localStorage`, so a member who chose dark mode and reloaded got light mode
+   back. The console's copy *did* persist, so nothing looked wrong: a member is
+   never shown the console, which means the working half of the pair is exactly
+   the half they never load. One hook in `src/lib/theme.ts` now serves both.
+
+2. **The console had no navigation on a phone.** A drawer built on the Radix
+   dialog, so it gets the focus trap, Escape, and the scroll lock. The regression
+   is held by a 390×844 pass that opens the drawer, follows a link, and checks
+   the drawer closed itself.
+
+3. **The palette was unreadable in ways nothing else caught.** Every token was
+   replaced, and the thing a token retune breaks silently is text contrast —
+   nothing crashes, a treasurer simply cannot read the screen. Both suites now
+   assert measured ratios for the primary button, body and muted text, the
+   sidebar, the stat tiles, the meter fill and the card edge, in both themes.
+
+   Two of those assertions failed on first run, and both failures were in the
+   *probe*, not the product: it compared a meter's inherited text colour against
+   its fill, and it looked for `.text-success` in the live DOM when that class
+   only renders on a branch the seed data never takes. Both are fixed, and the
+   distinction is documented in the script because "no spinner in `main`" and
+   "text on its own background" are the kind of thing that gets re-broken by
+   someone tidying.
+
+### What was measured, not assumed
+
+Every number in the contrast group is read from `getComputedStyle` in the
+browser, so it tests the cascade as shipped. The current worst case is the
+muted text in light mode at **4.93:1** against a 4.5:1 requirement, and the
+card edge in dark mode at **1.29:1** against a 1.25:1 requirement. Both pass,
+neither has a lot of headroom, and both are the first things to break if a token
+is edited.
+
 ## Not fixed, on purpose
 
 The collection-efficiency denominator counts dues raised for members who have

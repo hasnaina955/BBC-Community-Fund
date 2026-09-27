@@ -1,31 +1,14 @@
+import { Suspense, lazy } from "react"
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { useConvexAuth } from "@convex-dev/auth/react"
 import { AppShell } from "@/components/layout/app-shell"
 import { AuthGate } from "@/components/layout/auth-gate"
 import { FullPageLoader } from "@/components/layout/full-page-loader"
 import { PortalShell } from "@/components/portal/portal-shell"
+import { ReadModelLoader } from "@/components/shared/read-model"
 import { Button } from "@/components/ui/button"
 import { useCurrentUser } from "@/data/store"
 import Auth from "@/routes/auth"
-import Dashboard from "@/routes/dashboard"
-import Funds from "@/routes/funds"
-import FundDetail from "@/routes/fund-detail"
-import Members from "@/routes/members"
-import Contributions from "@/routes/contributions"
-import Transactions from "@/routes/transactions"
-import Approvals from "@/routes/approvals"
-import Banks from "@/routes/banks"
-import Reconciliation from "@/routes/reconciliation"
-import Reports from "@/routes/reports"
-import Settings from "@/routes/settings"
-import Users from "@/routes/users"
-import MemberAccounts from "@/routes/member-accounts"
-import PaymentRequests from "@/routes/payment-requests"
-import PortalHome from "@/routes/portal/portal-home"
-import PortalReceipts, { PortalReceipt } from "@/routes/portal/portal-receipts"
-import PortalStatement from "@/routes/portal/portal-statement"
-import PortalRequests from "@/routes/portal/portal-requests"
-import PortalAccount from "@/routes/portal/portal-account"
 
 /**
  * The route table: the recovered console, `/auth`, and the member portal.
@@ -59,7 +42,51 @@ import PortalAccount from "@/routes/portal/portal-account"
  * The server enforces both boundaries independently (`requireConsole` versus the
  * portal's session-scoped reads). This routing is the courtesy version, so that
  * nobody is shown a screen that is going to refuse them.
+ *
+ * ## Why the screens are lazy and the shells are not
+ *
+ * Before this, the whole application shipped as one 933 kB chunk (267 kB
+ * gzipped) and the build was already warning about it. The uncomfortable part is
+ * who pays for that: `recharts` is a quarter of it, and it is only used by four
+ * console screens — the dashboard, fund detail, reports, and the collection
+ * grid. **A member opening the portal to read their own balance downloaded the
+ * entire charting library to see four numbers.**
+ *
+ * `React.lazy` on the screens splits it without touching the router: a member
+ * now loads the portal and the console, and nothing else. The two shells and
+ * `/auth` stay eager because they are the first thing every single visitor
+ * needs, and a lazy shell would mean a spinner where the app should already be.
+ *
+ * The `Suspense` fallback is `ReadModelLoader` rather than a bare spinner, and
+ * that is deliberate for a second reason: it carries the `animate-spin` class
+ * the visual harnesses poll for. A fallback without it would make every
+ * assertion in the suite race the chunk download.
  */
+
+const Dashboard = lazy(() => import("@/routes/dashboard"))
+const Funds = lazy(() => import("@/routes/funds"))
+const FundDetail = lazy(() => import("@/routes/fund-detail"))
+const Members = lazy(() => import("@/routes/members"))
+const Contributions = lazy(() => import("@/routes/contributions"))
+const Transactions = lazy(() => import("@/routes/transactions"))
+const Approvals = lazy(() => import("@/routes/approvals"))
+const Banks = lazy(() => import("@/routes/banks"))
+const Reconciliation = lazy(() => import("@/routes/reconciliation"))
+const Reports = lazy(() => import("@/routes/reports"))
+const Settings = lazy(() => import("@/routes/settings"))
+const Users = lazy(() => import("@/routes/users"))
+const MemberAccounts = lazy(() => import("@/routes/member-accounts"))
+const PaymentRequests = lazy(() => import("@/routes/payment-requests"))
+const PortalHome = lazy(() => import("@/routes/portal/portal-home"))
+const PortalReceipts = lazy(() => import("@/routes/portal/portal-receipts"))
+// This module has two exports and only one of them is a route element.
+const PortalReceipt = lazy(() =>
+  import("@/routes/portal/portal-receipts").then((m) => ({ default: m.PortalReceipt })),
+)
+const PortalStatement = lazy(() => import("@/routes/portal/portal-statement"))
+const PortalRequests = lazy(() => import("@/routes/portal/portal-requests"))
+const PortalAccount = lazy(() => import("@/routes/portal/portal-account"))
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isLoading, isAuthenticated } = useConvexAuth()
   const location = useLocation()
@@ -104,7 +131,9 @@ function NotFound() {
 
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
-      <p className="text-4xl font-semibold text-muted-foreground">404</p>
+      <p className="tabular text-5xl font-semibold tracking-tight text-muted-foreground">
+        404
+      </p>
       <p className="font-medium">That page does not exist</p>
       <p className="max-w-sm text-sm text-muted-foreground">
         {isMember
@@ -122,52 +151,54 @@ function NotFound() {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/auth" element={<Auth />} />
+    <Suspense fallback={<ReadModelLoader label="Loading" />}>
+      <Routes>
+        <Route path="/auth" element={<Auth />} />
 
-      {/* The member portal. Its own shell, its own routes, reachable by anyone
-          signed in — a treasurer checking their own record is welcome here too. */}
-      <Route
-        path="/me"
-        element={
-          <RequireAuth>
-            <PortalGate />
-          </RequireAuth>
-        }
-      >
-        <Route index element={<PortalHome />} />
-        <Route path="receipts" element={<PortalReceipts />} />
-        <Route path="receipts/:id" element={<PortalReceipt />} />
-        <Route path="statement" element={<PortalStatement />} />
-        <Route path="requests" element={<PortalRequests />} />
-        <Route path="account" element={<PortalAccount />} />
-        <Route path="*" element={<NotFound />} />
-      </Route>
+        {/* The member portal. Its own shell, its own routes, reachable by anyone
+            signed in — a treasurer checking their own record is welcome here too. */}
+        <Route
+          path="/me"
+          element={
+            <RequireAuth>
+              <PortalGate />
+            </RequireAuth>
+          }
+        >
+          <Route index element={<PortalHome />} />
+          <Route path="receipts" element={<PortalReceipts />} />
+          <Route path="receipts/:id" element={<PortalReceipt />} />
+          <Route path="statement" element={<PortalStatement />} />
+          <Route path="requests" element={<PortalRequests />} />
+          <Route path="account" element={<PortalAccount />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
 
-      <Route
-        path="/"
-        element={
-          <RequireAuth>
-            <ConsoleGate />
-          </RequireAuth>
-        }
-      >
-        <Route index element={<Dashboard />} />
-        <Route path="funds" element={<Funds />} />
-        <Route path="funds/:id" element={<FundDetail />} />
-        <Route path="members" element={<Members />} />
-        <Route path="member-accounts" element={<MemberAccounts />} />
-        <Route path="contributions" element={<Contributions />} />
-        <Route path="transactions" element={<Transactions />} />
-        <Route path="approvals" element={<Approvals />} />
-        <Route path="payment-requests" element={<PaymentRequests />} />
-        <Route path="banks" element={<Banks />} />
-        <Route path="reconciliation" element={<Reconciliation />} />
-        <Route path="reports" element={<Reports />} />
-        <Route path="settings" element={<Settings />} />
-        <Route path="users" element={<Users />} />
-        <Route path="*" element={<NotFound />} />
-      </Route>
-    </Routes>
+        <Route
+          path="/"
+          element={
+            <RequireAuth>
+              <ConsoleGate />
+            </RequireAuth>
+          }
+        >
+          <Route index element={<Dashboard />} />
+          <Route path="funds" element={<Funds />} />
+          <Route path="funds/:id" element={<FundDetail />} />
+          <Route path="members" element={<Members />} />
+          <Route path="member-accounts" element={<MemberAccounts />} />
+          <Route path="contributions" element={<Contributions />} />
+          <Route path="transactions" element={<Transactions />} />
+          <Route path="approvals" element={<Approvals />} />
+          <Route path="payment-requests" element={<PaymentRequests />} />
+          <Route path="banks" element={<Banks />} />
+          <Route path="reconciliation" element={<Reconciliation />} />
+          <Route path="reports" element={<Reports />} />
+          <Route path="settings" element={<Settings />} />
+          <Route path="users" element={<Users />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
+      </Routes>
+    </Suspense>
   )
 }

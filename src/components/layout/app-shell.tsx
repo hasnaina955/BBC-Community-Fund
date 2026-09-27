@@ -7,11 +7,11 @@ import {
   Banknote,
   Building2,
   CheckCircle2,
-  ChevronRight,
   HandCoins,
   LayoutDashboard,
   ListChecks,
   LogOut,
+  Menu,
   Moon,
   PieChart,
   Scale,
@@ -23,15 +23,21 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useCurrentUser } from "@/data/store"
+import { useTheme } from "@/lib/theme"
 import { FullPageLoader } from "@/components/layout/full-page-loader"
 import { Button } from "@/components/ui/button"
 import { formatPaiseCompact } from "@/lib/format"
 import { Avatar } from "@/components/ui/avatar"
 import { ErrorBoundary } from "@/components/layout/error-boundary"
+import {
+  Sheet,
+  SheetContent,
+  SheetTrigger,
+} from "@/components/ui/sheet"
 
 /**
- * App shell. The sidebar palette comes from the recovered `--sidebar-*` tokens,
- * which is why it is dark in both themes while the content area is not.
+ * App shell. The sidebar palette comes from the `--sidebar-*` tokens, which is
+ * why it is dark in both themes while the content area is not.
  */
 
 const NAV = [
@@ -53,19 +59,82 @@ const NAV_ADMIN = [
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const
 
-function useTheme() {
-  const [dark, setDark] = useState(
-    () => document.documentElement.classList.contains("dark"),
+type NavItem = {
+  to: string
+  label: string
+  icon: typeof LayoutDashboard
+  end?: boolean
+  badge?: string
+}
+
+/**
+ * The sidebar list, used twice: once in the desktop rail and once in the phone
+ * drawer. Written once so the two cannot drift — a destination that appears on
+ * a desk and not on a phone is exactly the bug that made the console
+ * unusable on a phone to begin with.
+ *
+ * The active item is marked three ways on purpose: a saffron rail down its left
+ * edge, a filled background, and bolder type. One of those is easy to miss on a
+ * projector in a meeting room; together they are not.
+ */
+function NavList({
+  items,
+  badgeFor,
+  onNavigate,
+}: {
+  items: readonly NavItem[]
+  badgeFor: (badge: string) => number
+  onNavigate?: () => void
+}) {
+  return (
+    <div className="space-y-0.5">
+      {items.map(({ to, label, icon: Icon, end, badge }) => {
+        const count = badge ? badgeFor(badge) : 0
+        return (
+          <NavLink
+            key={to}
+            to={to}
+            end={end}
+            onClick={onNavigate}
+            className={({ isActive }) =>
+              cn(
+                "group relative flex items-center gap-3 rounded-md py-2 pl-3 pr-2.5 text-sm transition-colors",
+                "before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors",
+                isActive
+                  ? "bg-sidebar-accent font-semibold text-sidebar-accent-foreground before:bg-sidebar-primary"
+                  : "font-medium text-sidebar-foreground/75 before:bg-transparent hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+              )
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <Icon
+                  className={cn(
+                    "size-4 shrink-0 transition-colors",
+                    isActive ? "text-sidebar-primary" : "text-sidebar-foreground/60",
+                  )}
+                />
+                <span className="flex-1 truncate">{label}</span>
+                {count > 0 ? (
+                  <span className="tabular rounded-full bg-sidebar-primary px-1.5 py-0.5 text-[11px] font-semibold text-sidebar-primary-foreground">
+                    {count}
+                  </span>
+                ) : null}
+              </>
+            )}
+          </NavLink>
+        )
+      })}
+    </div>
   )
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark)
-    try {
-      localStorage.setItem("cf-theme", dark ? "dark" : "light")
-    } catch {
-      // Private browsing — the theme just will not persist.
-    }
-  }, [dark])
-  return { dark, toggle: () => setDark((d) => !d) }
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="px-3 pb-1.5 pt-5 text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/45">
+      {children}
+    </p>
+  )
 }
 
 export function AppShell() {
@@ -85,6 +154,16 @@ export function AppShell() {
   const { dark, toggle } = useTheme()
   const { signOut } = useAuthActions()
   const [signingOut, setSigningOut] = useState(false)
+  const [navOpen, setNavOpen] = useState(false)
+
+  // Close the drawer on navigation. `onNavigate` covers the links; this covers
+  // the browser back button and a swipe, which do not go through a link.
+  //
+  // This has to sit with the other hooks rather than below the `if (!shell)`
+  // bail-out, or the hook order would depend on whether the query has resolved.
+  useEffect(() => {
+    setNavOpen(false)
+  }, [location.pathname])
 
   const handleSignOut = async () => {
     setSigningOut(true)
@@ -105,158 +184,149 @@ export function AppShell() {
   // folded into the approvals count, because the two are confirmed by different
   // people in different ways.
   const requestCount = shell.paymentRequestCount
+  const badgeFor = (badge: string) =>
+    badge === "pending" ? pendingCount : badge === "requests" ? requestCount : 0
 
-  const renderNav = (
-    items: readonly {
-      to: string
-      label: string
-      icon: typeof LayoutDashboard
-      end?: boolean
-      badge?: string
-    }[],
-  ) =>
-    items.map(({ to, label, icon: Icon, end, badge }) => {
-      const count =
-        badge === "pending" ? pendingCount : badge === "requests" ? requestCount : 0
-      return (
-        <NavLink
-          key={to}
-          to={to}
-          end={end}
-          className={({ isActive }) =>
-            cn(
-              "group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-              isActive
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-            )
-          }
-        >
-          {({ isActive }) => (
-            <>
-              <Icon className="size-4 shrink-0" />
-              <span className="flex-1">{label}</span>
-              {count > 0 ? (
-                <span className="tabular rounded-full bg-sidebar-primary px-1.5 py-0.5 text-[11px] font-semibold text-sidebar-primary-foreground">
-                  {count}
-                </span>
-              ) : null}
-              {isActive ? (
-                <ChevronRight className="size-3.5 opacity-60" />
-              ) : null}
-            </>
-          )}
-        </NavLink>
-      )
-    })
+  const sidebarBody = (onNavigate?: () => void) => (
+    <>
+      <nav className="cf-scroll flex-1 overflow-y-auto px-3 py-2">
+        <NavList items={NAV} badgeFor={badgeFor} onNavigate={onNavigate} />
+        {isAdmin ? (
+          <>
+            <SectionLabel>Administration</SectionLabel>
+            <NavList items={NAV_ADMIN} badgeFor={badgeFor} onNavigate={onNavigate} />
+          </>
+        ) : null}
+      </nav>
+
+      <div className="space-y-3 border-t border-sidebar-border p-3">
+        <div className="rounded-lg bg-sidebar-accent/60 px-3 py-2.5">
+          <p className="text-[11px] uppercase tracking-wide text-sidebar-foreground/55">
+            Total across funds
+          </p>
+          <p className="tabular text-lg font-semibold text-sidebar-foreground">
+            {formatPaiseCompact(shell.totalBalance)}
+          </p>
+          <p className="text-[11px] text-sidebar-foreground/55">
+            {shell.memberCount} members · {shell.funds.length} funds
+          </p>
+          {/*
+            The arrears count used to live in the phone header, which is where a
+            treasurer used to see it. The header is now the menu, the app name
+            and the two buttons, so it has moved into the drawer next to the
+            other totals rather than being dropped.
+          */}
+          <p
+            className={cn(
+              "mt-1.5 border-t border-sidebar-border/60 pt-1.5 text-[11px]",
+              shell.arrearsCount > 0
+                ? "text-sidebar-primary"
+                : "text-sidebar-foreground/55",
+            )}
+          >
+            <span className="tabular">{shell.arrearsCount} in arrears</span>
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
+          <Avatar
+            name={me.name}
+            className="size-8 bg-sidebar-accent text-xs text-sidebar-accent-foreground"
+          />
+          <div className="min-w-0 flex-1 leading-tight">
+            <p className="truncate text-xs font-medium text-sidebar-foreground">
+              {me.name}
+            </p>
+            <p className="truncate text-[11px] capitalize text-sidebar-foreground/55">
+              {me.role.replace("_", " ")} · {me.orgName}
+            </p>
+          </div>
+          <button
+            onClick={toggle}
+            className="rounded-md p-1.5 text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+            aria-label="Toggle theme"
+          >
+            {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </button>
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="rounded-md p-1.5 text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:opacity-50"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <LogOut className="size-4" />
+          </button>
+        </div>
+      </div>
+    </>
+  )
+
+  const brand = (
+    <div className="flex h-16 shrink-0 items-center gap-2.5 px-5">
+      <div className="flex size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground">
+        CF
+      </div>
+      <div className="leading-tight">
+        <p className="text-sm font-semibold text-sidebar-foreground">
+          CommunityFund
+        </p>
+        <p className="text-[11px] text-sidebar-foreground/60">
+          Jamaat fund management
+        </p>
+      </div>
+    </div>
+  )
 
   return (
     <div className="flex min-h-screen bg-background">
-      {/* Sidebar */}
+      {/* Sidebar. The only one in the document — the phone drawer below is a
+          `nav`, not an `aside`, so a query for the first `aside` still finds
+          this and not the drawer. */}
       <aside className="cf-chrome sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar lg:flex">
-        <div className="flex h-16 items-center gap-2.5 px-5">
-          <div className="flex size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground">
-            CF
-          </div>
-          <div className="leading-tight">
-            <p className="text-sm font-semibold text-sidebar-foreground">
-              CommunityFund
-            </p>
-            <p className="text-[11px] text-sidebar-foreground/60">
-              Jamaat fund management
-            </p>
-          </div>
-        </div>
-
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
-          {renderNav(NAV)}
-          {isAdmin ? (
-            <>
-              <p className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/45">
-                Administration
-              </p>
-              {renderNav(NAV_ADMIN)}
-            </>
-          ) : null}
-        </nav>
-
-        <div className="space-y-3 border-t border-sidebar-border p-3">
-          <div className="rounded-lg bg-sidebar-accent/60 px-3 py-2.5">
-            <p className="text-[11px] uppercase tracking-wide text-sidebar-foreground/55">
-              Total across funds
-            </p>
-            <p className="tabular text-lg font-semibold text-sidebar-foreground">
-              {formatPaiseCompact(shell.totalBalance)}
-            </p>
-            <p className="text-[11px] text-sidebar-foreground/55">
-              {shell.memberCount} members · {shell.funds.length} funds
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
-            <Avatar
-              name={me.name}
-              className="size-8 bg-sidebar-accent text-xs text-sidebar-accent-foreground"
-            />
-            <div className="min-w-0 flex-1 leading-tight">                <p className="truncate text-xs font-medium text-sidebar-foreground">
-                  {me.name}
-                </p>
-                <p className="truncate text-[11px] capitalize text-sidebar-foreground/55">
-                  {me.role.replace("_", " ")} · {me.orgName}
-                </p>
-            </div>
-            <button
-              onClick={toggle}
-              className="rounded-md p-1.5 text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
-              aria-label="Toggle theme"
-            >
-              {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-            </button>
-            <button
-              onClick={handleSignOut}
-              disabled={signingOut}
-              className="rounded-md p-1.5 text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:opacity-50"
-              aria-label="Sign out"
-              title="Sign out"
-            >
-              <LogOut className="size-4" />
-            </button>
-          </div>
-        </div>
+        {brand}
+        {sidebarBody()}
       </aside>
 
       {/* Content */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Mobile header */}
-        <header className="cf-chrome sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur lg:hidden">
-          <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground">
-            CF
+        {/* Mobile header. The menu button is new and load-bearing: without it
+            this header offered the theme and the way out, and no way in. */}
+        <header className="cf-chrome sticky top-0 z-20 flex h-14 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur lg:hidden">
+          <Sheet open={navOpen} onOpenChange={setNavOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Open navigation">
+                <Menu className="size-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent aria-label="Console">
+              {brand}
+              {sidebarBody(() => setNavOpen(false))}
+            </SheetContent>
+          </Sheet>
+
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold">CommunityFund</p>
           </div>
-          <p className="text-sm font-semibold">CommunityFund</p>
-          <div className="ml-auto flex items-center gap-2">
-            <span className="tabular hidden text-xs text-muted-foreground sm:inline">
-              {shell.arrearsCount} in arrears
-            </span>
-            <button
-              onClick={toggle}
-              className="rounded-md border p-1.5"
-              aria-label="Toggle theme"
-            >
-              {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-            </button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleSignOut}
-              disabled={signingOut}
-            >
-              <LogOut className="size-4" />
-              <span className="hidden sm:inline">Sign out</span>
-            </Button>
-          </div>
+
+          <button
+            onClick={toggle}
+            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            aria-label="Toggle theme"
+          >
+            {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </button>
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            aria-label="Sign out"
+          >
+            <LogOut className="size-4" />
+          </button>
         </header>
 
-        <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8" key={location.pathname}>
+        <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8" key={location.pathname}>
           <div className="mx-auto w-full max-w-7xl space-y-6">
             {/*
               A screen's read model can fail — a fund id that no longer resolves,

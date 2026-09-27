@@ -16,8 +16,7 @@ Related: [Product brief](PRODUCT.md) · [Recovery notes](RECOVERY.md) ·
 | UI | React + TypeScript | Same as the original; the recovered components port directly |
 | Routing | React Router | Same as the original |
 | Components | shadcn/ui + Tailwind | Same as the original — the design system is already recovered and should not be redone |
-| Charts | Recharts | Same as the original |
-| Animation | Framer Motion | Same as the original |
+| Charts | Recharts | Same as the original; lazy-loaded, see "What the phone does not download" |
 | Backend | **Convex** | Reactive queries remove a whole class of sync bugs; no server to run; free tier; deployed with the app |
 | Database | Convex (built-in) | Same reasons |
 | Auth | **Convex Auth** | Removes the hand-rolled password table; OTP email auth suits a treasurer who shouldn't manage passwords |
@@ -51,11 +50,82 @@ migration expensive.
 | Drizzle + SQLite | Replaced by Convex |
 | REST under `/api/*` | Replaced by Convex queries/mutations/actions |
 | Hand-rolled password auth | Replaced by Convex Auth |
+| Framer Motion | Removed — see below |
 | `numeric` money columns | Replaced by integer paise |
 | Stored balance counters | Replaced by derived balances |
 | `POST /api/admin/reset` | Deleted |
 
 ---
+
+### Framer Motion, removed
+
+The stack table used to list Framer Motion as the animation library, and
+`package.json` still carried it. It was **never imported anywhere in the app** —
+the whole motion budget was Tailwind `transition-*` classes and `tailwindcss-animate`'s
+`animate-in`/`animate-out`, which is what the sheet and the dialogs actually use.
+
+A dependency nobody imports is not a neutral thing to leave in place: it is
+installed on every contributor's machine, it is in the lockfile, and it is
+documented as a load-bearing part of the stack, so the next person reaching for
+motion assumes they must use it and never checks. It was removed rather than
+kept, because nothing needs it.
+
+The one thing that had to be added in its place is `prefers-reduced-motion`. The
+Tailwind transitions are all decorative — no motion in this app carries meaning —
+so the whole set collapses to nothing under that preference rather than being
+selectively reduced.
+
+### Three.js, considered and declined
+
+Asked for by name during the UI work, and deliberately **not** adopted. The
+reasoning is recorded because "we tried it and it was too heavy" is a decision
+someone will otherwise re-litigate.
+
+The app shipped as a single 933 kB chunk (267 kB gzipped) and Vite was already
+warning about it. Three.js is roughly 600 kB minified before `OrbitControls` and
+a loader, so adopting it would have roughly doubled the bundle again. The
+deciding consideration is not the size on a laptop, though — it is who this app
+is for:
+
+- **A member opens the portal on a low-end Android phone**, possibly on mobile
+  data, to read one number: what they owe. That is the M3 design, and it is the
+  right one.
+- The payload work in M2 exists precisely because the original app shipped
+  1.47 MB of read models. A product that measured that and cut it 86% does not
+  then add a WebGL renderer to read a balance.
+
+**What was done instead** is the opposite of adding weight: `React.lazy` on the
+route screens, which cut the bytes every visitor loads from 267 kB to 111 kB
+gzipped and left the charting library in a chunk only four console screens ever
+request. A member's first load is now 111 kB gzip and contains no chart code at
+all.
+
+Three.js would earn its place in a **public marketing page** — where a first
+visit is a stranger, there is no one waiting on a number, and a hero animation
+is the entire point of the screen. There is no such page today; `/` is the
+console, behind the session. If one is ever added, three.js is a reasonable
+choice *there* and must stay out of the two applications that are signed in.
+
+## What the phone does not download
+
+`src/App.tsx` lazy-loads every route. The two shells and `/auth` stay eager,
+because they are the first thing every visitor needs and a lazy shell would mean
+a spinner where the app should already be. Everything else is an async chunk.
+
+This is not only a bundle-size decision. `recharts` is a quarter of the old
+bundle and is used by four console screens; a member reading their balance was
+downloading all of it. The split as built:
+
+| Chunk | Size | Who loads it |
+| --- | --- | --- |
+| `index` (shells, auth, router) | 111 kB gzip | Everyone, immediately |
+| `BarChart` (recharts) | 103 kB gzip | The four screens that draw a chart |
+| Each screen | 2–3 kB gzip | The one screen you are on |
+
+The `Suspense` fallback is `ReadModelLoader` rather than a bare spinner, and that
+is load-bearing beyond appearance: both visual harnesses wait for a screen by
+polling `main.querySelector(".animate-spin") === null`, so a fallback without
+that class would make every assertion in the suite race the chunk download.
 
 ## System shape
 
