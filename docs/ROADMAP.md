@@ -18,7 +18,8 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **M2a** | The ledger is the truth | M1 | **Done** | Balances derive from entries |
 | **M2b** | Server-side aggregation | M2a | **Done** | Eight years of history load |
 | **M2c** | Collection modes | M2a | **Done** | Only monthly dues can be arrears |
-| **M2d** | Reconciliation and close | M2a | Not started | Balances reconcile with the bank |
+| **V1** | Browser verification | M2c | **Done** | Every screen renders, and the numbers on it are the server's |
+| **M2d** | Reconciliation and close | M2a | **Done** | Balances reconcile with the bank |
 | **M3** | Member portal | M2 | Not started | A member is self-sufficient |
 | **M4** | Online collection | M2, M3 | Not started | A member can pay from a link |
 | **M5** | Reminders and arrears | M4 | Not started | Unpaid contributions get chased |
@@ -258,16 +259,58 @@ month, for a fund nobody owes anything to.
       pledge-based fund
 - [x] `bun run check` asserts the rule against a fund of every mode
 
-### M2d — Reconciliation and close *(not started)*
+### M2d — Reconciliation and close *(done)*
 
-- [ ] **Reconciliation screen** — ledger balance beside statement balance, per
+- [x] **Reconciliation screen** — ledger balance beside statement balance, per
       bank, with the difference called out
-- [ ] Record statement balance and date; store reconciliation history
-- [ ] Entries in a locked period are rejected by the ledger writer
-- [ ] Arrears aging buckets (current, 30/60/90+)
-- [ ] Backfill a ledger from the spreadsheet's opening balances
-- [ ] Invariant tests: no mutation path breaks the sum; locked periods reject
+- [x] Record statement balance and date; store reconciliation history
+- [x] Entries in a locked period are rejected by the ledger writer
+- [x] Arrears aging buckets (current, 30/60/90+)
+- [x] Backfill a ledger from the spreadsheet's opening balances
+- [x] Invariant tests: no mutation path breaks the sum; locked periods reject
       writes
+
+**What it turned out to need.** Three things, none of which were obvious from the
+checklist.
+
+**A reconciliation is a comparison on a date, not a comparison with today.** The
+obvious implementation files a statement and compares it to the current balance,
+which produces a difference every single time and is meaningless. The server
+derives what the ledger claimed *on the statement's date* and stores that
+alongside the bank's figure. It walks backwards from today's balance using the
+materialised per-year movement totals, so a statement from 2018 costs the same as
+one from last week — see `bankBalanceAsOf` in `convex/lib/balances.ts`.
+
+**Closing a year has to lock the entries, not just set a watermark.** The
+watermark already existed and `assertPeriodOpen` already enforced it, but a
+*reversal* is dated today, so a backdated entry from a closed year could still be
+backed out of the books six months later. `closeYear` now stamps `lockedTo` on
+every entry in the year, in pages, which is what makes "closed" mean closed.
+Closing also refuses while any account has an unexplained difference — a year
+closed over an unreconciled bank balance looks settled and is not.
+
+**The ageing buckets were answering the wrong question.** "1 month / 2 months /
+3+ months" counts how many months a member happens to owe, so it put ₹100 from
+2019 and ₹1,000 from last month in the same row. They are now days past due
+(current / 30 / 60 / 90+), which is the standard receivables presentation and the
+one a treasurer can act on. See `convex/lib/arrears.ts`.
+
+Two smaller things fell out of the same work: the opening balance is posted
+through `postEntry` like any other entry, so the balance invariant covers it and
+there is no way for it to disagree with the sum of the ledger; and the upper
+bound on every year-range ledger read was `lte("YYYY-12-31")`, which silently
+dropped 31 December because entries carry a time component that sorts after it.
+
+**Exit criteria, added for this milestone**
+
+- [x] A filed statement's difference is the server's figure, never the client's
+- [x] A statement that agrees with the books is reachable without inventing a
+      difference
+- [x] A closed year refuses a write dated inside it, and the refusal names the
+      year
+- [x] Ageing buckets sum to the arrears headline
+- [x] Closing is refused while a difference is unexplained, and allowed once it
+      is closed off
 
 ### Exit criteria — all met
 

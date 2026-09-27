@@ -333,7 +333,8 @@ export default defineSchema({
     .index("by_org", ["orgId"]),
 
   /**
-   * Materialised balances, one row per fund and per bank.
+   * Materialised balances, one row per fund, per bank, per member, and per
+   * bank-year.
    *
    * This is NOT a return to the legacy `current_balance` design. The difference
    * is that these are:
@@ -352,7 +353,19 @@ export default defineSchema({
    */
   balances: defineTable({
     orgId: v.id("organizations"),
-    scope: v.union(v.literal("fund"), v.literal("bank"), v.literal("member")),
+    // `bank_year` is a per-year movement total rather than a balance:
+    // `scopeId` is `${bankId}:${year}` and the amount is the net movement
+    // through that account during that year. It exists so a historical bank
+    // passbook can work out its opening balance from a handful of rows instead
+    // of re-reading every entry since that year — see aggregate:bankPassbook.
+    // An entry only ever touches the year it is dated in, so the write path
+    // stays O(1) no matter how far back it is dated.
+    scope: v.union(
+      v.literal("fund"),
+      v.literal("bank"),
+      v.literal("member"),
+      v.literal("bank_year"),
+    ),
     scopeId: v.string(),
     amountPaise: money,
     updatedAt: v.number(),

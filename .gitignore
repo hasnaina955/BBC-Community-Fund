@@ -51,3 +51,6 @@ Thumbs.db
 # Preview / deploy artifacts
 .freebuff/
 *.local
+
+# Visual verification artifacts (screenshots + report)
+.visual/

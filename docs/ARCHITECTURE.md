@@ -159,6 +159,28 @@ design because of what surrounds it:
 The property the original schema lacked is not "no stored counter" — it is
 "no way to tell whether the counter is right".
 
+### Per-year movement totals, and why they are not per-year balances
+
+A bank passbook for a past year needs two things: that year's rows, and the
+balance the account stood at on 1 January. The rows are a bounded index range,
+but the opening balance is a *suffix sum* — today's balance minus everything
+earned since. Reading that suffix is every entry from then to now: 6.6 seconds
+for 2018 at this community's history, and a screen that lies about its own dates
+along the way.
+
+The suffix is avoided with a fourth scope, `bank_year:<bankId>:<year>`, holding
+the account's net movement *in* that year. Closing for year Y is today's balance
+minus the movement of all later years — a handful of rows — and the opening
+falls out of that minus the year's own movement.
+
+It is a **movement total, not a balance**, and that is the whole trick. A
+per-year *balance* would have to be adjusted for every year at or after the year
+an entry is dated in, so a backdated correction would fan out across the whole
+history and the write path would stop being O(1). A movement total only ever
+moves the year the entry belongs to. It obeys the same rule as every other
+scope — derived, rebuildable, verified — and `bun run balances:backfill` creates
+it through `balances:recompute` rather than by insertion.
+
 ### Reading a year, not the history
 
 Most screens want one year, not everything. `effectiveDate` is an ISO string and
@@ -220,6 +242,48 @@ Screen queries use `useQuery` and are wrapped by `ErrorBoundary` in the app
 shell, which catches the rethrow and renders it in place of the screen with a
 retry. A fund id that no longer resolves should cost you that one page, not the
 sidebar.
+
+---
+
+## Reconciliation and the close watermark
+
+A ledger balance is a *claim* about a bank account. Only the bank can confirm it,
+so the treasurer reads the figure off a statement and files it here.
+
+The one thing that makes this correct rather than decorative: **the comparison is
+made on the statement's date.** Filing a January statement and comparing it to
+today's balance reports a difference every time, because six months of giving have
+happened since. So the server derives what the ledger claimed *as at that day* and
+stores both figures with their difference.
+
+`bankBalanceAsOf` in `convex/lib/balances.ts` does that derivation by walking
+backwards from today's balance: whole years come out of the materialised
+`bank_year` movement totals (O(years) rows), and the remainder of the statement's
+own year is one bounded index range. A statement from 2018 therefore costs what a
+statement from last week costs.
+
+**Closing a financial year** sets `organizations.closedThrough` *and* stamps
+`lockedTo` on every entry dated in the year, in pages. The stamping is the part
+that is easy to miss: a reversal is dated *today*, so the date-based watermark
+alone would let a backdated entry from a closed year be quietly backed out months
+later. With the stamp, "the books are closed" and "March cannot be changed" are
+the same statement. `closeYear` also refuses while any account has an unexplained
+difference — a year closed over an unreconciled bank balance looks settled, and is
+worse than one left open.
+
+**Arrears ageing** is by *days past due*, not by how many months a member owes
+(`convex/lib/arrears.ts`). Month-counting put ₹100 from 2019 and ₹1,000 from last
+month in one bucket, which is not a distinction anyone can act on. The due date is
+`contributions.dueDate` when set, and the 10th of the charged month otherwise —
+matching the convention `members:generateMonth` already uses.
+
+**The opening balance** is what an imported ledger starts from: the community kept
+its books in a spreadsheet, so on the day the ledger begins each account already
+held money, and starting from zero would be *wrong* rather than merely incomplete.
+It is posted through `postEntry` with `source: "opening"`, so it moves the same
+materialised balances as any other entry and `balances:verify` covers it. There is
+deliberately no "set the balance" path, and the mutation refuses a fund or account
+that already has entries — re-posting would double the money.
 
 ---
 
@@ -441,7 +505,10 @@ src/
 │   │   ├── money.ts           paise <-> display, parsing
 │   │   ├── audit.ts           record(...) on every mutation
 │   │   ├── ledger.ts          the only writer of ledger_entries
-│   │   └── periods.ts         fiscal year, close, locking
+│   │   ├── balances.ts        materialised balances, verify/recompute
+│   │   ├── arrears.ts         due dates, days past due, ageing buckets
+│   │   └── funds.ts           the collectionMode rules
+│   ├── reconciliation.ts       statements, differences, fiscal-year close
 │   ├── queries/               balances, grid, arrears, dashboard, reports
 │   ├── mutations/             funds, banks, members, contributions, payments,
 │   │                          transactions, approvals, reconciliation, users

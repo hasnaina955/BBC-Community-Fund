@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server"
 import { v } from "convex/values"
 import { requireTreasurer } from "./lib/authz"
-import { recomputeAll, readAllBalances } from "./lib/balances"
+import { recomputeAll, readAllBalances, truthFromEntries } from "./lib/balances"
 import { recordAudit } from "./lib/audit"
 
 /**
@@ -23,21 +23,9 @@ export const verify = query({
       .withIndex("by_date", (q) => q.eq("orgId", actor.orgId))
       .collect()
 
-    const truth = new Map<string, number>()
-    for (const entry of entries) {
-      if (entry.fundId) {
-        const key = `fund:${entry.fundId}`
-        truth.set(key, (truth.get(key) ?? 0) + entry.amountPaise)
-      }
-      if (entry.bankId) {
-        const key = `bank:${entry.bankId}`
-        truth.set(key, (truth.get(key) ?? 0) + entry.amountPaise)
-      }
-      if (entry.memberId) {
-        const key = `member:${entry.memberId}`
-        truth.set(key, (truth.get(key) ?? 0) + entry.amountPaise)
-      }
-    }
+    // The same derivation `balances:recompute` repairs with, so "verified" and
+    // "repaired" can never mean two different things.
+    const truth = truthFromEntries(entries)
 
     const current = await readAllBalances(ctx.db, actor.orgId)
     const mismatches: Array<{

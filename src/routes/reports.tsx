@@ -30,6 +30,7 @@ import { CURRENT_YEAR, yearsInRange } from "@/data/period"
 import {
   formatPaise,
   formatPaiseCompact,
+  MONTH_LABELS,
   MONTHS_SHORT,
   percent,
 } from "@/lib/format"
@@ -43,6 +44,26 @@ const CHART_COLORS = [
   "hsl(var(--chart-4))",
   "hsl(var(--chart-5))",
 ]
+
+/**
+ * Ageing bars run from calm to alarming, so the colour has to as well: the
+ * youngest money owed is the least urgent, and the bar for money owed for more
+ * than three months is the one that should catch the eye.
+ */
+const AGING_BAR = [
+  "bg-chart-3",
+  "bg-chart-4",
+  "bg-chart-5",
+  "bg-destructive/80",
+  "bg-destructive",
+]
+
+/** `March 2024` from a `YYYY-MM-DD` due date, for the oldest-due column. */
+function monthYear(iso: string | null): string {
+  if (!iso) return ""
+  const month = Number(iso.slice(5, 7))
+  return `${MONTH_LABELS[month - 1] ?? ""} ${iso.slice(0, 4)}`.trim()
+}
 
 /**
  * One `aggregate:reports` call per year, returning efficiency per month,
@@ -126,7 +147,7 @@ export default function Reports() {
               <StatCard
                 label="Outstanding"
                 value={formatPaise(data.totalArrears)}
-                hint={`${data.arrearsCount} members with unpaid monthly dues`}
+                hint={`${data.arrearsCount} members with unpaid monthly dues, all years`}
                 tone={data.arrearsCount > 0 ? "negative" : "positive"}
               />
               <StatCard
@@ -266,10 +287,11 @@ export default function Reports() {
                 <Card>
                   <CardHeader>
                     <CardTitle>Arrears ageing</CardTitle>
-                    <CardDescription>
-                      {formatPaise(data.totalArrears)} outstanding from{" "}
-                      {data.arrearsCount} members, monthly fund only
-                    </CardDescription>
+                  <CardDescription>
+                    {formatPaise(data.totalArrears)} outstanding from{" "}
+                    {data.arrearsCount} members across all years · monthly
+                    fund only · aged by how long each month has been due
+                  </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     {data.totalArrears === 0 ? (
@@ -279,13 +301,15 @@ export default function Reports() {
                     ) : (
                       <>
                         {data.aging.map((bucket, i) => (
-                          <div key={bucket.label} className="space-y-1.5">
+                          <div key={bucket.key} className="space-y-1.5">
                             <div className="flex justify-between text-sm">
                               <span>
-                                {bucket.label} behind
+                                {bucket.label}
                                 <span className="ml-2 text-xs text-muted-foreground">
-                                  {bucket.count} member
-                                  {bucket.count === 1 ? "" : "s"}
+                                  {bucket.count} month
+                                  {bucket.count === 1 ? "" : "s"} ·{" "}
+                                  {bucket.members} member
+                                  {bucket.members === 1 ? "" : "s"}
                                 </span>
                               </span>
                               <span className="tabular font-medium">
@@ -296,11 +320,7 @@ export default function Reports() {
                               <div
                                 className={cn(
                                   "h-full rounded-full",
-                                  i === 0
-                                    ? "bg-chart-4"
-                                    : i === 1
-                                      ? "bg-chart-5"
-                                      : "bg-destructive",
+                                  AGING_BAR[i % AGING_BAR.length],
                                 )}
                                 style={{
                                   width: `${percent(
@@ -325,7 +345,9 @@ export default function Reports() {
                               >
                                 <span className="truncate">{m.name}</span>
                                 <span className="shrink-0 text-xs text-muted-foreground">
-                                  {m.months}mo
+                                  {m.oldestDays > 0
+                                    ? `since ${monthYear(m.oldestDueDate)}`
+                                    : `${m.months}mo`}
                                   <span className="tabular ml-2 font-medium text-foreground">
                                     {formatPaise(m.totalPaise)}
                                   </span>
@@ -356,11 +378,12 @@ export default function Reports() {
                 <Card>
                   <CardHeader>
                     <CardTitle>Voluntary and donation giving</CardTitle>
-                    <CardDescription>
-                      {unscheduledRounds.length} collection round
-                      {unscheduledRounds.length === 1 ? "" : "s"} in {year} ·{" "}
-                      {formatPaise(data.roundFundTotal)} collected in total
-                    </CardDescription>
+                  <CardDescription>
+                    {unscheduledRounds.length} collection round
+                    {unscheduledRounds.length === 1 ? "" : "s"} in {year} ·{" "}
+                    {formatPaise(data.roundFundTotal)} collected into
+                    voluntary and donation funds in {year}
+                  </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2">
                     {data.collectionRounds.length === 0 ? (

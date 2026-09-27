@@ -1,4 +1,4 @@
-import type { MutationCtx } from "../_generated/server"
+import type { MutationCtx, QueryCtx } from "../_generated/server"
 import type { DataModel, Id } from "../_generated/dataModel"
 import type { Actor } from "./authz"
 import { assertPaise, nowIso } from "./money"
@@ -93,7 +93,7 @@ export async function postEntry(
   })
 
   // Same transaction as the entry, so the counter cannot drift from it.
-  await touchScopes(ctx, actor.orgId, input, input.amountPaise)
+  await touchScopes(ctx, actor.orgId, input, input.amountPaise, effectiveDate)
 
   return id
 }
@@ -104,12 +104,23 @@ async function touchScopes(
   orgId: Id<"organizations">,
   target: { fundId?: Id<"funds">; bankId?: Id<"banks">; memberId?: Id<"members"> },
   amountPaise: number,
+  effectiveDate: string,
 ): Promise<void> {
   if (target.fundId) {
     await applyToBalance(ctx, orgId, "fund", target.fundId, amountPaise)
   }
   if (target.bankId) {
     await applyToBalance(ctx, orgId, "bank", target.bankId, amountPaise)
+    // The per-year movement total for the year this entry falls in, and only
+    // that year — see `truthFromEntries` for why a movement total is safe to
+    // keep materialised where a per-year balance would not be.
+    await applyToBalance(
+      ctx,
+      orgId,
+      "bank_year",
+      `${target.bankId}:${Number(effectiveDate.slice(0, 4))}`,
+      amountPaise,
+    )
   }
   if (target.memberId) {
     await applyToBalance(ctx, orgId, "member", target.memberId, amountPaise)
@@ -187,12 +198,14 @@ export async function postTransfer(
     actor.orgId,
     { fundId: input.fromFundId, bankId: input.fromBankId },
     -input.amountPaise,
+    effectiveDate,
   )
   await touchScopes(
     ctx,
     actor.orgId,
     { fundId: input.toFundId, bankId: input.toBankId },
     input.amountPaise,
+    effectiveDate,
   )
 
   return [outgoing, incoming]
@@ -242,12 +255,51 @@ export async function reverseEntry(
       memberId: original.memberId,
     },
     -original.amountPaise,
+    nowIso(),
   )
 
   return id
 }
 
 /* ------------------------------------------------------------- derived reads */
+
+/**
+ * Ledger entries whose effective date falls in `[from, toExclusive)`.
+ *
+ * `effectiveDate` is an ISO string and `by_date` is (orgId, effectiveDate), so
+ * the period is a contiguous key range on the index — this is what makes a
+ * single year a bounded read instead of a scan of the whole ledger.
+ *
+ * The upper bound is the *start of the next period*, never its last day. Entries
+ * written by the payment path carry a time component
+ * ("2024-12-31T10:30:00.000Z"), which sorts **after** "2024-12-31", so every
+ * `lte("YYYY-12-31")` in this codebase was quietly discarding 31 December —
+ * the single day a year-end statement is most likely to be about. The seeder's
+ * spending specs never fall on the 31st, which is why this went unnoticed; a
+ * real bank passbook does.
+ */
+export async function entriesBetween(
+  ctx: QueryCtx,
+  orgId: Id<"organizations">,
+  from: string,
+  toExclusive: string,
+): Promise<EntryDoc[]> {
+  return ctx.db
+    .query("ledgerEntries")
+    .withIndex("by_date", (q) =>
+      q
+        .eq("orgId", orgId)
+        .gte("effectiveDate", from)
+        .lt("effectiveDate", toExclusive),
+    )
+    .collect()
+}
+
+/** Start of the given year, as an ISO date string. */
+export const yearStart = (year: number): string => `${year}-01-01`
+
+/** Start of the year *after* the given one — the exclusive bound for that year. */
+export const nextYearStart = (year: number): string => `${year + 1}-01-01`
 
 export function sum(entries: Array<{ amountPaise: number }>): number {
   let total = 0

@@ -237,3 +237,40 @@ export const ROLE_LABELS: Record<Role, string> = {
   viewer: "Viewer",
   member: "Member",
 }
+
+/**
+ * Roles in descending order of privilege — the same ranking the server uses in
+ * `convex/lib/authz.ts` (`RANK` / `atLeast`).
+ *
+ * This is a *display* mirror, never an enforcement point: the server refuses the
+ * write regardless. It exists so a screen can simply not offer a control the
+ * signed-in role cannot use, instead of offering it and failing silently. Every
+ * mutation in the app was called with `void promise`, so a viewer clicking a
+ * grid cell got no error, no change and no explanation.
+ */
+const ROLE_RANK: Record<Role, number> = {
+  admin: 4,
+  treasurer: 3,
+  fund_manager: 2,
+  viewer: 1,
+  member: 0,
+}
+
+export function hasRole(role: Role, minimum: Role): boolean {
+  return ROLE_RANK[role] >= ROLE_RANK[minimum]
+}
+
+/** May mark a contribution paid/unpaid/waived, and create funds. */
+export function canEditBooks(role: Role): boolean {
+  return hasRole(role, "treasurer")
+}
+
+/** May approve or reject a transaction. */
+export function canApprove(role: Role): boolean {
+  return hasRole(role, "treasurer")
+}
+
+/** May see the audit log, manage users, or change settings. */
+export function isAdmin(role: Role): boolean {
+  return role === "admin"
+}

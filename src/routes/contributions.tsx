@@ -25,10 +25,11 @@ import { PageHeader } from "@/components/shared/page-header"
 import { EmptyState, StatCard } from "@/components/shared/stat-card"
 import { WithReadModel } from "@/components/shared/read-model"
 import { CollectionModeBadge } from "@/components/shared/status-badge"
-import { useActions, useShell } from "@/data/store"
+import { useActions, useCurrentUser, useShell } from "@/data/store"
 import { useCollectionGrid, useFunds } from "@/data/queries"
 import { CURRENT_YEAR, TODAY, yearsInRange } from "@/data/period"
 import { formatPaise, MONTHS_SHORT, percent } from "@/lib/format"
+import { canEditBooks } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 /**
@@ -46,11 +47,13 @@ import { cn } from "@/lib/utils"
  */
 export default function Contributions() {
   const { setContributionStatus } = useActions()
+  const me = useCurrentUser()
   const shell = useShell()
   const fundsModel = useFunds()
   const [year, setYear] = useState(CURRENT_YEAR)
   const [fundId, setFundId] = useState<string | null>(null)
   const [query, setQuery] = useState("")
+  const [error, setError] = useState<string | null>(null)
 
   const model = useCollectionGrid(year, fundId)
   const years = yearsInRange(shell.yearRange.from, shell.yearRange.to)
@@ -60,18 +63,29 @@ export default function Contributions() {
     (f) => f.collectionMode === "fixed_monthly",
   )
 
-  const cycle = (
-    id: string,
-    current: string,
-  ) => {
+  // A viewer may look at the grid all day; what they may not do is change it.
+  // The server refuses the write either way — this stops the UI from offering
+  // a control that could only ever fail.
+  const canEdit = canEditBooks(me.role)
+
+  const cycle = async (id: string, current: string) => {
     const order = ["due", "paid", "waived"] as const
     const index = order.indexOf(current as (typeof order)[number])
     const next = order[(index + 1) % order.length]
-    void setContributionStatus(
-      id,
-      next,
-      next === "waived" ? "Approved by committee — hardship" : undefined,
-    )
+    setError(null)
+    try {
+      await setContributionStatus(
+        id,
+        next,
+        next === "waived" ? "Approved by committee — hardship" : undefined,
+      )
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "That change could not be saved.",
+      )
+    }
   }
 
   return (
@@ -120,7 +134,11 @@ export default function Contributions() {
           <div className="space-y-6">
             <PageHeader
               title="Monthly Collection Grid"
-              description={`${grid.fundName} · click a cell to change its status`}
+              description={
+                canEdit
+                  ? `${grid.fundName} · click a cell to change its status`
+                  : `${grid.fundName} · view only`
+              }
             >
               <Select
                 value={fundId ?? "auto"}
@@ -220,6 +238,11 @@ export default function Contributions() {
                     <Badge variant="info">Waived</Badge>
                     <span>·</span>
                     <span>{rows.length} members</span>
+                    {canEdit ? (
+                      <span>· click a cell to change its status</span>
+                    ) : (
+                      <span>· view only</span>
+                    )}
                   </div>
                 </div>
 
@@ -284,35 +307,57 @@ export default function Contributions() {
                                 key={month}
                                 className="p-1 text-center"
                               >
-                                {isFuture ? (
-                                  <span className="text-muted-foreground/25">
-                                    —
-                                  </span>
-                                ) : cell ? (
-                                  <button
-                                    onClick={() =>
-                                      cycle(cell.contributionId, cell.status)
-                                    }
-                                    title={`${row.name} · ${
-                                      MONTHS_SHORT[month - 1]
-                                    } ${year} · ${status} · ${formatPaise(
-                                      cell.amountPaise,
-                                    )}`}
-                                    className={cn(
-                                      "tabular w-full rounded-md px-2 py-1.5 text-[11px] font-medium transition-all hover:scale-105",
-                                      status === "paid" &&
-                                        "bg-chart-3/15 text-chart-3 hover:bg-chart-3/25",
-                                      status === "due" &&
-                                        "bg-destructive/10 text-destructive hover:bg-destructive/20",
-                                      status === "waived" &&
-                                        "bg-chart-2/15 text-chart-2 hover:bg-chart-2/25",
-                                      status === "partial" &&
-                                        "bg-chart-4/15 text-chart-4 hover:bg-chart-4/25",
-                                    )}
-                                  >
-                                    {formatPaise(cell.amountPaise)}
-                                  </button>
-                                ) : (
+                            {isFuture ? (
+                              <span className="text-muted-foreground/25">
+                                —
+                              </span>
+                            ) : cell ? (
+                              canEdit ? (
+                                <button
+                                  onClick={() =>
+                                    void cycle(cell.contributionId, cell.status)
+                                  }
+                                  title={`${row.name} · ${
+                                    MONTHS_SHORT[month - 1]
+                                  } ${year} · ${status} · ${formatPaise(
+                                    cell.amountPaise,
+                                  )}`}
+                                  className={cn(
+                                    "tabular w-full rounded-md px-2 py-1.5 text-[11px] font-medium transition-all hover:scale-105",
+                                    status === "paid" &&
+                                      "bg-chart-3/15 text-chart-3 hover:bg-chart-3/25",
+                                    status === "due" &&
+                                      "bg-destructive/10 text-destructive hover:bg-destructive/20",
+                                    status === "waived" &&
+                                      "bg-chart-2/15 text-chart-2 hover:bg-chart-2/25",
+                                    status === "partial" &&
+                                      "bg-chart-4/15 text-chart-4 hover:bg-chart-4/25",
+                                  )}
+                                >
+                                  {formatPaise(cell.amountPaise)}
+                                </button>
+                              ) : (
+                                <span
+                                  title={`${row.name} · ${
+                                    MONTHS_SHORT[month - 1]
+                                  } ${year} · ${status} · ${formatPaise(
+                                    cell.amountPaise,
+                                  )}`}
+                                  className={cn(
+                                    "tabular block rounded-md px-2 py-1.5 text-[11px] font-medium",
+                                    status === "paid" && "bg-chart-3/15 text-chart-3",
+                                    status === "due" &&
+                                      "bg-destructive/10 text-destructive",
+                                    status === "waived" &&
+                                      "bg-chart-2/15 text-chart-2",
+                                    status === "partial" &&
+                                      "bg-chart-4/15 text-chart-4",
+                                  )}
+                                >
+                                  {formatPaise(cell.amountPaise)}
+                                </span>
+                              )
+                            ) : (
                                   <span className="text-muted-foreground/30">
                                     —
                                   </span>
@@ -333,6 +378,12 @@ export default function Contributions() {
                 {rows.length === 0 ? (
                   <p className="py-8 text-center text-sm text-muted-foreground">
                     No members match “{query}”.
+                  </p>
+                ) : null}
+
+                {error ? (
+                  <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    {error}
                   </p>
                 ) : null}
               </CardContent>

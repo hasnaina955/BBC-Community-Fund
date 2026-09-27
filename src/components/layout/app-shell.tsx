@@ -11,6 +11,7 @@ import {
   LogOut,
   Moon,
   PieChart,
+  Scale,
   Settings,
   Sun,
   Users,
@@ -36,6 +37,7 @@ const NAV = [
   { to: "/transactions", label: "Transactions", icon: Wallet },
   { to: "/approvals", label: "Approvals", icon: ListChecks, badge: "pending" },
   { to: "/banks", label: "Banks", icon: Building2 },
+  { to: "/reconciliation", label: "Reconciliation", icon: Scale },
   { to: "/reports", label: "Reports", icon: CheckCircle2 },
 ] as const
 

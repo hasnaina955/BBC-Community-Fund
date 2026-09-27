@@ -9,7 +9,7 @@ workflow, and reconcile every rupee against the bank.
 ---
 
 > [!IMPORTANT]
-> **Milestones M0, M1 and M2a–M2c are complete — this runs against a real
+> **Milestones M0, M1 and M2a–M2d are complete — this runs against a real
 > backend, over eight years of real-shaped history.**
 >
 > This repo previously held only a compiled frontend bundle whose backend had
@@ -52,8 +52,9 @@ CommunityFund is the tool a treasurer uses to:
 | Trustworthy money | **Done (M2a)** — derived balances, materialised and verifiable |
 | Server-side aggregation | **Done (M2b)** — every dashboard and report figure |
 | Collection modes | **Done (M2c)** — arrears only where a due actually exists |
+| Reconciliation and FY close | **Done (M2d)** — statements vs. the books on the statement's date; a closed year locks its entries |
+| Verified in a browser | **Done** — 213 checks across every screen, role and error path ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
 | Data | **Done (M1)** — seeded: 1 org, 5 staff, 3 banks, 6 funds, 84 members |
-| Reconciliation UI, FY close UI | M2d |
 | Member portal, payments, reminders | M3–M5 |
 
 ## Running it
@@ -66,6 +67,7 @@ bun run build      # typecheck + production build into dist/
 bun run check      # authz, the mode rule, and the balance invariant
 bun run smoke      # every read model returns against the seeded data
 bun run measure    # payload per screen, against history
+bun run visual     # every screen in a real browser, against real data
 ```
 
 `bun run dev` starts **both** halves, because the Convex backend only listens
@@ -88,9 +90,19 @@ auth domain is `http://127.0.0.1:3211` (the Convex *site* port — the mismatch
 between these two is the single most common Convex Auth setup mistake).
 Generate the keypair with `bunx @convex-dev/auth --web-server-url <origin>`.
 
-> A browser **outside** the sandbox cannot reach `127.0.0.1:3210`. To use the
-> app from your own machine, deploy Convex to the cloud and set
-> `VITE_CONVEX_URL` to that deployment URL.
+> **Opening the app from a browser that is not on the sandbox's loopback.** A
+> local Convex backend only listens on loopback, so a page served from anywhere
+> else — the hosted preview, a tunnel to this machine, another device on the LAN
+> — cannot reach it. Chrome blocks that outright under its local-network access
+> checks, and the symptom is a silent hang: the sign-in button spins forever
+> because `signIn()` waits on a socket that never connects, with no error shown.
+>
+> The Vite dev server therefore proxies `/__convex` to the backend, websockets
+> included, and `src/lib/convex.tsx` points the client at that same-origin path
+> whenever the page itself is not on loopback. Opening the app on `127.0.0.1` and
+> opening it through a tunnel to port 5173 therefore behave identically, and only
+> the Vite port needs to be reachable. A real cloud deployment still just works:
+> point `VITE_CONVEX_URL` at it and it is used directly.
 
 ### Demo accounts
 
@@ -119,6 +131,7 @@ bun run seed:history   # 2018 → last year, one year per call
 bun run check          # every materialised balance equals the sum of its entries
 bun run smoke          # all 30 read models return a result
 bun run measure        # what each screen actually downloads
+bun run visual         # every screen renders, and the numbers are the server's
 ```
 
 `seed:history` is one year per mutation because Convex allows 4096 document
@@ -208,11 +221,11 @@ Start here, then go deeper:
 
 ## The plan in one paragraph
 
-M0 reclaimed the codebase and M1–M2c stand up a real backend with real
+M0 reclaimed the codebase and M1–M2d stand up a real backend with real
 authentication, a trustworthy ledger, aggregation that survives eight years of
-history, and a fund model that knows the difference between money members owe
-and money they choose to give. Reconciliation and fiscal-year close finish M2
-(M2d). Then the product grows outward: a member portal so people can see what
+history, a fund model that knows the difference between money members owe and
+money they choose to give, and reconciliation that checks the books against the
+bank. Then the product grows outward: a member portal so people can see what
 they owe (M3), actual online collection (M4), automated reminders that chase
 unpaid contributions (M5), multi-tenancy so more than one community can use it
 (M6), reporting and compliance (M7), and finally operational hardening (M8).

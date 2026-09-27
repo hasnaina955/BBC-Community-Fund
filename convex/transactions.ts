@@ -18,6 +18,10 @@ import { category } from "./schema"
  * A pending transaction has never touched the ledger. Approval is the moment
  * it does. That is the rule the whole trust story rests on: a request cannot
  * move a balance, and a rejection leaves no trace in the accounts.
+ *
+ * Fiscal-year close and reconciliation live in `convex/reconciliation.ts`. They
+ * used to be here as bare watermark setters with no UI, no entry stamping and no
+ * check that the year reconciled first; M2d gave them a home of their own.
  */
 
 export const createTransaction = mutation({
@@ -345,72 +349,6 @@ export const recordPayment = mutation({
     })
 
     return { paymentId, receiptNo, unallocatedPaise: remaining }
-  },
-})
-
-/**
- * Close a financial year.
- *
- * Sets the organisation watermark. After this, the ledger refuses any entry
- * dated in or before the closed year. Milestone M2 exposes this in the UI.
- */
-export const closeFinancialYear = mutation({
-  args: { year: v.number() },
-  handler: async (ctx, args) => {
-    const actor = await requireTreasurer(ctx)
-    if (!Number.isInteger(args.year) || args.year < 2000 || args.year > 2100) {
-      throw new Error("Year must be between 2000 and 2100")
-    }
-
-    const org = await ctx.db.get(actor.orgId)
-    if (!org) throw new Error("Organisation not found")
-
-    const current = org.closedThrough ?? 0
-    if (args.year <= current) {
-      throw new Error(`The books are already closed through ${current}`)
-    }
-    if (args.year > new Date().getUTCFullYear()) {
-      throw new Error("You cannot close a year that has not happened")
-    }
-
-    await ctx.db.patch(actor.orgId, { closedThrough: args.year })
-
-    await recordAudit(ctx, actor, {
-      action: "financialYear.closed",
-      entityType: "organization",
-      entityId: actor.orgId,
-      details: `Books closed through ${args.year}`,
-    })
-
-    return args.year
-  },
-})
-
-/** Reopen a closed year. Audited, and reserved for admins. */
-export const reopenFinancialYear = mutation({
-  args: { year: v.number() },
-  handler: async (ctx, args) => {
-    const actor = await requireTreasurer(ctx)
-    if (actor.role !== "admin") {
-      throw new Error("Only an admin can reopen a closed year")
-    }
-    const org = await ctx.db.get(actor.orgId)
-    if (!org) throw new Error("Organisation not found")
-    const current = org.closedThrough ?? 0
-    if (args.year !== current) {
-      throw new Error(`The books are closed through ${current}`)
-    }
-
-    await ctx.db.patch(actor.orgId, { closedThrough: args.year - 1 })
-
-    await recordAudit(ctx, actor, {
-      action: "financialYear.reopened",
-      entityType: "organization",
-      entityId: actor.orgId,
-      details: `Books reopened for ${args.year}`,
-    })
-
-    return args.year
   },
 })
 

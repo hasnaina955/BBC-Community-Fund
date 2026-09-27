@@ -63,6 +63,19 @@ export function useBankPassbook(bankId: string | null, year: number) {
   )
 }
 
+/* --------------------------------------------------------- reconciliation */
+
+/**
+ * Every account with its last filed statement, plus the close watermark.
+ *
+ * One query for the whole screen rather than one per account, because the screen
+ * always draws all of them — N subscriptions would be N round trips for a screen
+ * the treasurer opens once a month.
+ */
+export function useReconciliation() {
+  return useQuery(api.reconciliation.status)
+}
+
 /* ---------------------------------------------------------------- members */
 
 export type MemberFilter = "all" | "active" | "inactive" | "arrears" | "clear"

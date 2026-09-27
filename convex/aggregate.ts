@@ -4,6 +4,8 @@ import type { Id } from "./_generated/dataModel"
 import type { QueryCtx } from "./_generated/server"
 import { requireMember } from "./lib/authz"
 import { readAllBalances } from "./lib/balances"
+import { ageDues, oldestDuePerMember } from "./lib/arrears"
+import { entriesBetween, nextYearStart, yearStart } from "./lib/ledger"
 import { modeOf, hasDues, isUnscheduled, type CollectionMode } from "./lib/funds"
 import { MONTHS_SHORT, sumPaise } from "./lib/money"
 
@@ -96,26 +98,18 @@ function statsFor(rows: ContribDoc[]): CollectionStats {
 /**
  * Ledger entries for one calendar year, selected by index range.
  *
- * `by_date` is (orgId, effectiveDate) and effectiveDate is an ISO string, so
- * `2024-01-01 .. 2024-12-31` is a contiguous key range. This is the difference
- * between reading ~1.2k rows for a year and reading all ~15k: at eight years of
- * history a whole-ledger scan would not just be slow, it would exceed Convex's
- * 16384-document read limit and fail outright.
+ * This is the difference between reading ~1.2k rows for a year and reading all
+ * ~10k: at eight years of history a whole-ledger scan would not just be slow, it
+ * would exceed Convex's 16384-document read limit and fail outright. The range
+ * is half-open and the upper bound comes from `entriesBetween`, which is where
+ * the reasoning about ISO timestamps lives.
  */
 async function entriesInYear(
   ctx: QueryCtx,
   orgId: Id<"organizations">,
   year: number,
 ) {
-  return ctx.db
-    .query("ledgerEntries")
-    .withIndex("by_date", (q) =>
-      q
-        .eq("orgId", orgId)
-        .gte("effectiveDate", `${year}-01-01`)
-        .lte("effectiveDate", `${year}-12-31`),
-    )
-    .collect()
+  return entriesBetween(ctx, orgId, yearStart(year), nextYearStart(year))
 }
 
 /* ------------------------------------------------------------------ shell */
@@ -427,17 +421,14 @@ export const fundDetail = query({
     // Spend by category needs this year's debits for this fund only. The
     // (orgId, fundId, effectiveDate) index makes that a key range rather than
     // every entry the fund has ever had.
-    const yearEntries = await ctx.db
-      .query("ledgerEntries")
-      .withIndex("by_fund_date", (q) =>
-        q
-          .eq("orgId", actor.orgId)
-          .eq("fundId", args.fundId)
-          .gte("effectiveDate", `${CURRENT_YEAR}-01-01`)
-          .lte("effectiveDate", `${CURRENT_YEAR}-12-31`),
+    const yearEntries = (
+      await entriesBetween(
+        ctx,
+        actor.orgId,
+        yearStart(CURRENT_YEAR),
+        nextYearStart(CURRENT_YEAR),
       )
-      .collect()
-      .then((all) => all.filter((e) => e.amountPaise < 0))
+    ).filter((e) => e.fundId === args.fundId && e.amountPaise < 0)
     const categoryTotals = new Map<string, number>()
     for (const entry of yearEntries) {
       categoryTotals.set(
@@ -550,23 +541,40 @@ export const bankPassbook = query({
     const actor = await requireMember(ctx)
     const balances = await readAllBalances(ctx.db, actor.orgId)
     const year = args.year ?? CURRENT_YEAR
-    const from = `${year}-01-01`
 
     // effectiveDate is an ISO string, so the by_date index range-selects one
-    // year. This is what keeps the passbook from scanning all history.
-    const entries = await ctx.db
-      .query("ledgerEntries")
-      .withIndex("by_date", (q) =>
-        q.eq("orgId", actor.orgId).gte("effectiveDate", from),
+    // year. Both bounds matter: without the upper one, asking for 2018 returned
+    // every entry from 2018 to today and labelled nine years of transactions
+    // "entries in 2018".
+    const entries = (
+      await entriesBetween(
+        ctx,
+        actor.orgId,
+        yearStart(year),
+        nextYearStart(year),
       )
-      .collect()
-      .then((all) => all.filter((e) => e.bankId === args.bankId))
+    ).filter((e) => e.bankId === args.bankId)
 
-    // Opening balance for the year, derived rather than scanned: the
-    // materialised closing balance minus everything received this year.
-    const closingThisYear = sumPaise(entries.map((e) => e.amountPaise))
+    // Opening and closing for the year, from the materialised per-year movement
+    // totals rather than by re-reading the ledger. `movementThisYear` is this
+    // account's net movement in `year`; everything after it is what the account
+    // has earned since, so subtracting that from today's balance gives the
+    // balance at the end of `year`. O(years) rows read, not O(entries) — which
+    // is the difference between 100ms and 6.6s for the oldest year.
+    const prefix = `bank_year:${args.bankId}:`
+    let movementThisYear = 0
+    let movementSince = 0
+    for (const [key, amountPaise] of balances) {
+      if (!key.startsWith(prefix)) continue
+      const keyYear = Number(key.slice(prefix.length))
+      if (!Number.isFinite(keyYear)) continue
+      if (keyYear === year) movementThisYear = amountPaise
+      else if (keyYear > year) movementSince += amountPaise
+    }
+
     const closingAllTime = balances.get(`bank:${args.bankId}`) ?? 0
-    const openingPaise = closingAllTime - closingThisYear
+    const closingThisYear = closingAllTime - movementSince
+    const openingPaise = closingThisYear - movementThisYear
 
     const ascending = [...entries].sort((a, b) =>
       a.effectiveDate.localeCompare(b.effectiveDate),
@@ -587,7 +595,7 @@ export const bankPassbook = query({
     return {
       year,
       openingPaise,
-      closingPaise: running,
+      closingPaise: closingThisYear,
       totalCreditPaise: sumPaise(
         rows.filter((r) => r.amountPaise > 0).map((r) => r.amountPaise),
       ),
@@ -1172,9 +1180,34 @@ export const reports = query({
     const totalSpend = sumPaise([...categoryTotals.values()])
 
     // Arrears aging, again only for scheduled funds.
+    //
+    // Ageing is by days past due, not by how many months a member happens to
+    // owe. The old buckets ("1 month", "2 months", "3+ months") put someone
+    // owing ₹100 from 2019 and someone owing ₹1,000 from last month in the same
+    // row, which is not a decision anyone can act on. See convex/lib/arrears.ts.
     const open = (await openDues(ctx, actor.orgId)).filter((c) =>
       c.fundId ? dueFundIds.has(c.fundId) : false,
     )
+    const buckets = ageDues(
+      open.map((c) => ({
+        memberId: c.memberId,
+        amountPaise: c.amountPaise,
+        year: c.year,
+        month: c.month,
+        dueDate: c.dueDate,
+      })),
+      NOW,
+    )
+    const oldest = oldestDuePerMember(
+      open.map((c) => ({
+        memberId: c.memberId,
+        year: c.year,
+        month: c.month,
+        dueDate: c.dueDate,
+      })),
+      NOW,
+    )
+
     const byMember = new Map<Id<"members">, number[]>()
     for (const row of open) {
       if (!row.memberId) continue
@@ -1183,30 +1216,23 @@ export const reports = query({
       byMember.set(row.memberId, list)
     }
     const memberName = new Map(membersList.map((m) => [m._id, m.name]))
-    const aged = [...byMember.entries()].map(([id, amounts]) => ({
-      memberId: id,
-      name: memberName.get(id) ?? "",
-      months: amounts.length,
-      totalPaise: sumPaise(amounts),
-    }))
-
-    const buckets = [
-      { label: "1 month", min: 1, max: 1 },
-      { label: "2 months", min: 2, max: 2 },
-      { label: "3+ months", min: 3, max: 12 },
-    ].map((b) => {
-      const matching = aged.filter(
-        (a) => a.months >= b.min && a.months <= b.max,
-      )
+    const aged = [...byMember.entries()].map(([id, amounts]) => {
+      const oldestDue = oldest.get(id)
       return {
-        label: b.label,
-        count: matching.length,
-        totalPaise: sumPaise(matching.map((a) => a.totalPaise)),
+        memberId: id,
+        name: memberName.get(id) ?? "",
+        months: amounts.length,
+        totalPaise: sumPaise(amounts),
+        oldestDueDate: oldestDue?.dueDate ?? null,
+        oldestDays: oldestDue?.days ?? 0,
       }
     })
     const totalArrears = sumPaise(aged.map((a) => a.totalPaise))
 
     // Voluntary funds are reported by what was collected, never as arrears.
+    const unscheduledFundIds = new Set(
+      fundsList.filter((f) => isUnscheduled(f)).map((f) => f._id),
+    )
     const collectionRounds = await ctx.db
       .query("collectionRounds")
       .withIndex("by_org_fund_date", (q) => q.eq("orgId", actor.orgId))
@@ -1226,8 +1252,13 @@ export const reports = query({
       })
       .reverse()
 
+    // The month-to-date cut-off belongs to the *current* year only. Applying it
+    // to a completed year dropped October onwards, so the 2024 report headlined
+    // ₹69,700 while the efficiency chart directly beside it totalled ₹93,300.
     const yearStats = statsFor(
-      scopedDues.filter((c) => c.month <= MONTHS_ELAPSED) as ContribDoc[],
+      (year === CURRENT_YEAR
+        ? scopedDues.filter((c) => c.month <= MONTHS_ELAPSED)
+        : scopedDues) as ContribDoc[],
     )
 
     return {
@@ -1259,13 +1290,21 @@ export const reports = query({
         }
       }),
       collectionRounds: roundTotals,
-      // Voluntary funds are reported by what has actually been collected. The
-      // balance of an unscheduled fund *is* its collection, so no separate
-      // rounds ledger is needed here — but it is never called "arrears".
+      // Voluntary and donation funds are reported by what has actually been
+      // collected, and for *this year* — the card sits next to "N collection
+      // rounds in {year}", so an all-time fund balance beside a year-scoped
+      // count was answering a different question than the one asked. The year's
+      // credits are already in `yearEntries`, so this costs nothing extra.
       roundFundTotal: sumPaise(
-        fundsList
-          .filter((f) => isUnscheduled(f))
-          .map((f) => balances.get(`fund:${f._id}`) ?? 0),
+        yearEntries
+          .filter(
+            (e) =>
+              e.fundId !== undefined &&
+              e.fundId !== null &&
+              unscheduledFundIds.has(e.fundId) &&
+              e.amountPaise > 0,
+          )
+          .map((e) => e.amountPaise),
       ),
     }
   },

@@ -183,8 +183,11 @@ export default function FundDetail() {
                     </span>{" "}
                     {drift > 0 ? "more than" : "less than"} this fund&apos;s
                     ledger balance. That is expected when the account serves
-                    more than one fund — reconciliation settles it in milestone
-                    M2.
+                    more than one fund — the{" "}
+                    <Link to="/reconciliation" className="underline">
+                      reconciliation screen
+                    </Link>{" "}
+                    checks the account as a whole.
                   </p>
                 </CardContent>
               </Card>

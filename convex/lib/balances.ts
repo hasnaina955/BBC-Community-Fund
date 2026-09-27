@@ -18,6 +18,45 @@ import type { Actor } from "./authz"
 type Scope = DataModel["balances"]["document"]["scope"]
 type DB = QueryCtx["db"] | MutationCtx["db"]
 
+type EntryLike = {
+  fundId?: string | null
+  bankId?: string | null
+  memberId?: string | null
+  amountPaise: number
+  effectiveDate: string
+}
+
+/**
+ * The scopes a ledger entry is supposed to move, and by how much.
+ *
+ * One function, used by both `balances:verify` and `balances:recompute`, so the
+ * invariant cannot be checked against one definition and repaired against
+ * another. That duplication is how a scope quietly stops being verified.
+ *
+ * `bank_year` is the odd one out: it is a per-year *movement* total rather than
+ * a running balance, which is what makes it safe to maintain. An entry dated in
+ * year Y moves `bank_year:<bank>:Y` and nothing else, so a backdated entry does
+ * not invalidate every later year the way a running balance would.
+ */
+export function truthFromEntries(entries: EntryLike[]): Map<string, number> {
+  const truth = new Map<string, number>()
+  const add = (key: string, delta: number) =>
+    truth.set(key, (truth.get(key) ?? 0) + delta)
+
+  for (const entry of entries) {
+    if (entry.fundId) add(`fund:${entry.fundId}`, entry.amountPaise)
+    if (entry.bankId) {
+      add(`bank:${entry.bankId}`, entry.amountPaise)
+      add(
+        `bank_year:${entry.bankId}:${Number(entry.effectiveDate.slice(0, 4))}`,
+        entry.amountPaise,
+      )
+    }
+    if (entry.memberId) add(`member:${entry.memberId}`, entry.amountPaise)
+  }
+  return truth
+}
+
 /**
  * Collect every document of a table, a page at a time.
  *
@@ -116,6 +155,65 @@ export async function readAllBalances(
   return new Map(rows.map((r) => [`${r.scope}:${r.scopeId}`, r.amountPaise]))
 }
 
+/** `YYYY-MM-DD` for the day after `iso`, in UTC. */
+function nextDay(iso: string): string {
+  const d = new Date(`${iso}T00:00:00.000Z`)
+  d.setUTCDate(d.getUTCDate() + 1)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * A bank account's ledger balance **as at the end of `asOf`**.
+ *
+ * Reconciliation needs this: a bank statement says what the account held on a
+ * given day, so the only fair comparison is against what our own ledger said on
+ * that same day — not against today's balance.
+ *
+ * It is derived the same way `aggregate:bankPassbook` derives a year's opening
+ * balance, and for the same reason. The account's current balance is the truth
+ * today; to walk backwards we subtract everything that has happened since:
+ * first whole years, from the materialised `bank_year` movement totals (O(years)
+ * rows, not O(entries)), and then the remainder of `asOf`'s own year, which is
+ * one bounded index range. A statement dated 2018 therefore costs the same as
+ * one dated yesterday.
+ */
+export async function bankBalanceAsOf(
+  ctx: QueryCtx,
+  orgId: Id<"organizations">,
+  bankId: Id<"banks">,
+  balances: Map<string, number>,
+  asOf: string,
+): Promise<number> {
+  const year = Number(asOf.slice(0, 4))
+  let balance = balances.get(`bank:${bankId}`) ?? 0
+
+  const prefix = `bank_year:${bankId}:`
+  for (const [key, amountPaise] of balances) {
+    if (!key.startsWith(prefix)) continue
+    const keyYear = Number(key.slice(prefix.length))
+    if (Number.isFinite(keyYear) && keyYear > year) balance -= amountPaise
+  }
+
+  // The upper bound is the *start of next year*, not `YYYY-12-31`. `effectiveDate`
+  // is an ISO string, and entries written by the payment path carry a time
+  // component ("2024-12-31T10:30:00.000Z"), which sorts *after* "2024-12-31" —
+  // so an `lte` on the last day silently dropped 31 December.
+  const later = await ctx.db
+    .query("ledgerEntries")
+    .withIndex("by_date", (q) =>
+      q
+        .eq("orgId", orgId)
+        .gte("effectiveDate", nextDay(asOf))
+        .lt("effectiveDate", `${year + 1}-01-01`),
+    )
+    .collect()
+  for (const entry of later) {
+    if (entry.bankId === bankId) balance -= entry.amountPaise
+  }
+
+  return balance
+}
+
 /**
  * Recompute every balance from the ledger and report what moved.
  *
@@ -140,21 +238,7 @@ export async function recomputeAll(
       ),
   )
 
-  const truth = new Map<string, number>()
-  for (const entry of entries) {
-    if (entry.fundId) {
-      const key = `fund:${entry.fundId}`
-      truth.set(key, (truth.get(key) ?? 0) + entry.amountPaise)
-    }
-    if (entry.bankId) {
-      const key = `bank:${entry.bankId}`
-      truth.set(key, (truth.get(key) ?? 0) + entry.amountPaise)
-    }
-    if (entry.memberId) {
-      const key = `member:${entry.memberId}`
-      truth.set(key, (truth.get(key) ?? 0) + entry.amountPaise)
-    }
-  }
+  const truth = truthFromEntries(entries)
 
   const current = await readAllBalances(ctx.db, actor.orgId)
   const changes: string[] = []
