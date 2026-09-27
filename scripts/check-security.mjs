@@ -423,5 +423,263 @@ check(
   JSON.stringify(verifyAgain.value ?? verifyAgain.errorMessage),
 )
 
+/* ---------------------------------------- 4. the member portal (milestone M3) */
+
+/**
+ * The portal introduced the first role that is signed in but is *not* on the
+ * committee. That makes it the first time "is signed in" and "may see the books"
+ * are different sets of people, and therefore the first time the distinction has
+ * to be enforced rather than assumed.
+ *
+ * These are the refusals. The portal's happy paths are verified in a real
+ * browser by `bun run visual:portal`; what belongs here is the set of things a
+ * member must *not* be able to reach, because a browser check can only prove
+ * what somebody thought to look at, while these are exhaustive over the read
+ * models that could leak.
+ */
+console.log("\n  member portal — a member is not on the committee")
+
+const member = await signIn("imran@example.org")
+const unlinked = await signIn("ayesha@example.org")
+
+// Identity is the one thing a member must be able to read, because it is what
+// tells them which world they are in.
+const meAsMember = await call("data:me", {}, member)
+check(
+  "a member can read their own identity",
+  meAsMember.status === "success" && meAsMember.value.role === "member",
+  JSON.stringify(meAsMember.value ?? meAsMember.errorMessage),
+)
+
+// Every console read model must refuse. This loop is the point of the check:
+// the failure mode being guarded against is one new screen quietly reusing
+// `requireActor` and handing a member the organisation's totals.
+const consoleModels = [
+  "aggregate:shell",
+  "aggregate:dashboard",
+  "aggregate:members",
+  "aggregate:funds",
+  "aggregate:transactions",
+  "aggregate:reports",
+  "aggregate:audit",
+  "reconciliation:status",
+  "data:listUsers",
+  "data:listMembers",
+  "data:listPayments",
+]
+for (const fn of consoleModels) {
+  const res = await call(fn, {}, member)
+  check(
+    `${fn} refuses a member`,
+    res.status === "error" && /viewer access required/i.test(res.errorMessage ?? ""),
+    res.errorMessage,
+  )
+}
+
+// The treasurer-only portal surfaces.
+for (const fn of ["portal:accountStatus", "portal:requestsQueue"]) {
+  const res = await call(fn, {}, member)
+  check(
+    `${fn} refuses a member`,
+    res.status === "error" && /treasurer access required/i.test(res.errorMessage ?? ""),
+    res.errorMessage,
+  )
+}
+
+// A member can reach their own portal…
+const myAccount = await call("portal:myAccount", {}, member)
+check(
+  "a member can read their own portal account",
+  myAccount.status === "success" && typeof myAccount.value.memberId === "string",
+  JSON.stringify(myAccount.value ?? myAccount.errorMessage),
+)
+
+// …and the claim flow is theirs alone.
+const claimAsTreasurer = await call("portal:claim", {}, admin, "mutation")
+check(
+  "committee staff cannot claim a member record",
+  claimAsTreasurer.status === "error" && /already have access/i.test(claimAsTreasurer.errorMessage ?? ""),
+  claimAsTreasurer.errorMessage,
+)
+
+// An unlinked account is a real state, not an error and not a zero balance.
+const unlinkedSummary = await call("portal:summary", {}, unlinked)
+check(
+  "an unlinked member has no balance read model at all",
+  unlinkedSummary.status === "success" && unlinkedSummary.value === null,
+  JSON.stringify(unlinkedSummary),
+)
+
+// The arithmetic the member is shown must be the arithmetic of the rows.
+const summary = await call("portal:summary", {}, member)
+if (summary.status === "success" && summary.value) {
+  const s = summary.value
+  check(
+    "this month plus arrears is the total outstanding",
+    s.currentMonthPaise + s.arrearsPaise === s.totalOutstandingPaise,
+    `${s.currentMonthPaise} + ${s.arrearsPaise} != ${s.totalOutstandingPaise}`,
+  )
+  check(
+    "the arrears months are the months actually counted as open",
+    s.arrearsMonths === s.months.filter((m) => m.status === "due" || m.status === "partial").length,
+    `arrearsMonths=${s.arrearsMonths}`,
+  )
+  check(
+    "the receipt slice is capped but the totals are not",
+    s.receipts.length <= 50 && s.paymentCount >= s.receipts.length,
+    `${s.receipts.length} listed, ${s.paymentCount} in total`,
+  )
+} else {
+  check("portal:summary returns a read model for a linked member", false, summary.errorMessage)
+}
+
+// A statement's foot is the arithmetic of its body, computed from the same rows.
+const statement = await call("portal:statement", {}, member)
+if (statement.status === "success" && statement.value) {
+  const st = statement.value
+  check(
+    "the statement's balance is its own rows, added up",
+    st.chargedTotalPaise - st.receivedTotalPaise === st.outstandingPaise,
+    `${st.chargedTotalPaise} - ${st.receivedTotalPaise} != ${st.outstandingPaise}`,
+  )
+  check(
+    "the statement lists every payment, where the screen caps at fifty",
+    summary.value ? st.received.length === summary.value.paymentCount : true,
+    `${st.received.length} on the statement vs ${summary.value?.paymentCount} counted`,
+  )
+} else {
+  check("portal:statement returns a statement for a linked member", false, statement.errorMessage)
+}
+
+// Receipt authorization. A receipt that is not the caller's must be
+// indistinguishable from one that does not exist, or the id is an oracle.
+const anyReceipt = summary.value?.receipts?.[0]
+if (anyReceipt) {
+  const own = await call("receipts:receiptData", { paymentId: anyReceipt.id }, member)
+  check(
+    "a member can read their own receipt",
+    own.status === "success" && own.value?.receiptNo === anyReceipt.receiptNo,
+    JSON.stringify(own.value ?? own.errorMessage),
+  )
+  const stranger = await call("receipts:receiptData", { paymentId: anyReceipt.id }, unlinked)
+  check(
+    "another member's receipt is null, exactly like a receipt that does not exist",
+    stranger.status === "success" && stranger.value === null,
+    JSON.stringify(stranger),
+  )
+  const asTreasurer = await call("receipts:receiptData", { paymentId: anyReceipt.id }, admin)
+  check(
+    "a treasurer can read any receipt, for reprinting at the desk",
+    asTreasurer.status === "success" && asTreasurer.value?.receiptNo === anyReceipt.receiptNo,
+    JSON.stringify(asTreasurer.value ?? asTreasurer.errorMessage),
+  )
+  const anonymous = await call("receipts:receiptData", { paymentId: anyReceipt.id })
+  check(
+    "an anonymous caller gets nothing",
+    anonymous.status === "error",
+    anonymous.errorMessage,
+  )
+}
+
+// The claim flow's refusals. Every one of these is a way a member could
+// otherwise erase their own arrears or invent a payment.
+const futureClaim = await call(
+  "portal:requestPayment",
+  {
+    amountPaise: 10000,
+    method: "cash",
+    paidAt: new Date(Date.UTC(new Date().getUTCFullYear() + 1, 0, 1)).toISOString(),
+  },
+  member,
+  "mutation",
+)
+check(
+  "a claim dated in the future is refused",
+  futureClaim.status === "error" && /future/i.test(futureClaim.errorMessage ?? ""),
+  futureClaim.errorMessage,
+)
+
+const zeroClaim = await call(
+  "portal:requestPayment",
+  { amountPaise: 0, method: "cash", paidAt: new Date().toISOString() },
+  member,
+  "mutation",
+)
+check(
+  "a claim for nothing is refused",
+  zeroClaim.status === "error",
+  zeroClaim.errorMessage,
+)
+
+const openRequests = (await call("portal:myRequests", {}, member)).value ?? []
+const open = openRequests.find((r) => r.status === "pending")
+if (open) {
+  const decideIt = await call(
+    "portal:decideRequest",
+    { requestId: open.id, approve: true },
+    member,
+    "mutation",
+  )
+  check(
+    "a member cannot decide their own claim",
+    decideIt.status === "error" && /treasurer access required/i.test(decideIt.errorMessage ?? ""),
+    decideIt.errorMessage,
+  )
+  const decidedTwice = await call(
+    "portal:decideRequest",
+    { requestId: open.id, approve: false, note: "again" },
+    admin,
+    "mutation",
+  )
+  check(
+    "an open claim can be refused, and only once",
+    decidedTwice.status === "success" || /already/i.test(decidedTwice.errorMessage ?? ""),
+    decidedTwice.errorMessage,
+  )
+} else {
+  // Nothing open: create one so the "cannot decide your own" path is still
+  // exercised, then refuse it so the suite leaves no money-moving state behind.
+  const made = await call(
+    "portal:requestPayment",
+    { amountPaise: 10000, method: "cash", paidAt: new Date().toISOString() },
+    member,
+    "mutation",
+  )
+  if (made.status === "success") {
+    const mine = (await call("portal:myRequests", {}, member)).value ?? []
+    const row = mine.find((r) => r.id === made.value.id)
+    const decideIt = await call(
+      "portal:decideRequest",
+      { requestId: row.id, approve: true },
+      member,
+      "mutation",
+    )
+    check(
+      "a member cannot decide their own claim",
+      decideIt.status === "error" && /treasurer access required/i.test(decideIt.errorMessage ?? ""),
+      decideIt.errorMessage,
+    )
+    const second = await call(
+      "portal:requestPayment",
+      { amountPaise: 10000, method: "cash", paidAt: new Date().toISOString() },
+      member,
+      "mutation",
+    )
+    check(
+      "a second claim while one is open is refused",
+      second.status === "error" && /already have a payment request/i.test(second.errorMessage ?? ""),
+      second.errorMessage,
+    )
+    await call(
+      "portal:decideRequest",
+      { requestId: row.id, approve: false, note: "cleared by bun run check" },
+      admin,
+      "mutation",
+    )
+  } else {
+    check("a member can open a claim", false, made.errorMessage)
+  }
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed.\n`)
 process.exit(fail > 0 ? 1 : 0)

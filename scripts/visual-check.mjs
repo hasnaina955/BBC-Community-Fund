@@ -326,6 +326,52 @@ check(
   `${shell.yearRange.from}..${shell.yearRange.to} (derived from the earliest member join date)`,
 )
 
+/* ------------------------------------- leave the books as this run found them */
+
+/**
+ * Close off any bank difference a *previous* run left open.
+ *
+ * `aggregate:fundDetail` deliberately refuses to render a fund whose bank has an
+ * unexplained difference — M2d added that on purpose, because a number computed
+ * across a known gap is worse than no number. The reconciliation group below
+ * creates such a difference on purpose and then closes it off, which means a run
+ * killed between those two steps (a dead proxy, a crashed sandbox) leaves one
+ * behind. The next run then fails three fund-detail checks against a product
+ * that is behaving exactly as designed.
+ *
+ * The close watermark has the same hazard and already has a walk for it
+ * (`closableYear` below). This is the same repair, for the same reason, done
+ * before the read-only groups rather than inside the group that can cause it —
+ * because the damage is visible to every screen, not only to reconciliation.
+ *
+ * It reports what it found rather than passing silently, so a run that had to
+ * clean up after the last one is visible in the report.
+ */
+group("leaving the books ready")
+{
+  const before = (await convexCall("reconciliation:status", {}, jwt)).value
+  const stuck = (before?.accounts ?? []).filter(
+    (a) => a.latest && a.latest.resolvedAt == null,
+  )
+  if (stuck.length === 0) {
+    check("no bank is left with an unexplained difference from a previous run", true)
+  } else {
+    for (const account of stuck) {
+      const resolved = await convexCall(
+        "reconciliation:resolve",
+        { reconciliationId: account.latest.id, note: "cleared by the visual suite" },
+        jwt,
+        "mutation",
+      )
+      check(
+        `a difference left open on ${account.name} is closed off so the books are readable`,
+        resolved.error === undefined,
+        resolved.error ?? `${account.latest.differencePaise} paise`,
+      )
+    }
+  }
+}
+
 /* ------------------------------------------------------- route sweep */
 
 const ROUTES = [
@@ -1196,16 +1242,22 @@ group("reconciliation — filing a statement")
   // The status read model caps the rows it returns per account so its cost does
   // not grow with usage. Silently truncating a financial history would be the
   // wrong trade, so the screen has to say when it is showing a subset.
-  const overCap = agreeing.accounts.find((a) => a.historyCount > a.history.length)
+  //
+  // Asserted against the account the screen is actually showing — the one this
+  // group just filed to — and in both directions. The earlier version searched
+  // the whole read model for *any* over-cap account and then asserted the notice
+  // was on screen, which only holds while that account happens to be the selected
+  // one. On a freshly seeded database it is, so the check passed; once repeated
+  // runs had pushed one account past the cap and the group had moved on to
+  // another, it failed against a screen that was behaving correctly.
   check(
     "the screen says when it is showing only the most recent statements",
-    overCap === undefined
-      ? true
-      : has(afterAgree, "most recent of") ||
-        has(afterAgree, `${overCap.history.length} most recent`),
-    overCap
-      ? `${overCap.historyCount} on record, ${overCap.history.length} listed`
-      : "no account is over the cap",
+    filed.historyCount > filed.history.length
+      ? has(afterAgree, "most recent of")
+      : !has(afterAgree, "most recent of"),
+    `${filed.historyCount} on record, ${filed.history.length} listed for ${
+      account.name
+    }`,
   )
   await shot("15b-reconciliation-agrees")
 

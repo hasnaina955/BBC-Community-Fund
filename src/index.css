@@ -154,9 +154,7 @@
   .tabular {
     font-variant-numeric: tabular-nums;
   }
-}
-
-@layer components {
+}@layer components {
   /* Subtle grid texture used behind the app shell. */
   .cf-grid-bg {
     background-image: linear-gradient(
@@ -164,7 +162,83 @@
         var(--elevate-1) 1px,
         transparent 1px
       ),
-      linear-gradient(to bottom, var(--elevate-1) 1px, transparent 1px);
+      linear-gradient(
+        to bottom,
+        var(--elevate-1) 1px,
+        transparent 1px
+      );
     background-size: 32px 32px;
   }
 }
+
+/*
+ * Printing.
+ *
+ * The member portal produces two documents: a receipt and a passbook statement.
+ * Both are the page on screen, not a separate renderer — so this block's whole
+ * job is to take away everything that is interface rather than record.
+ *
+ * Two things are worth stating rather than just doing:
+ *
+ *   1. **Dark mode is forced off.** A member who reads their statement in dark
+ *      mode and prints it would otherwise get a page that is mostly black, with
+ *      the text burned out by the printer. The tokens are re-declared as light
+ *      values inside the print media query, so the document always comes out as
+ *      ink on paper regardless of the theme toggle.
+ *   2. **The mobile layout is not widened.** The portal is built for a 390px
+ *      phone and that is the width a statement will be printed from, so the
+ *      content keeps its max width and simply loses its padding. Widening it to
+ *      A4 would give a member a table with one column and a lot of white space.
+ */
+@media print {
+  :root,
+  .dark {
+    --background: 0 0% 100%;
+    --foreground: 240 20% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 20% 10%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 240 5% 45%;
+    --border: 240 10% 85%;
+    --primary: 262 80% 45%;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000;
+  }
+
+  /* Screen furniture only. Deliberately *not* a bare `header`/`nav` selector:
+     a receipt and a statement each have a `<header>` that is part of the
+     document, and hiding every one of them would print a page with no title on
+     it. The shells mark their own chrome with `cf-chrome` instead. */
+  .cf-chrome,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* Nothing on a receipt should be a link-coloured, clickable-looking thing. */
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  /* Do not orphan a receipt or a statement across a page break. */
+  article,
+  tr,
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Repeat the column headings when a long statement runs over a page. */
+  thead {
+    display: table-header-group;
+  }
+
+  @page {
+    margin: 14mm;
+  }
+}
+

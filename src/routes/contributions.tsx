@@ -25,9 +25,10 @@ import { PageHeader } from "@/components/shared/page-header"
 import { EmptyState, StatCard } from "@/components/shared/stat-card"
 import { WithReadModel } from "@/components/shared/read-model"
 import { CollectionModeBadge } from "@/components/shared/status-badge"
-import { useActions, useCurrentUser, useShell } from "@/data/store"
+import { useActions, useCurrentUser } from "@/data/store"
+import { useYearRange } from "@/data/queries"
 import { useCollectionGrid, useFunds } from "@/data/queries"
-import { CURRENT_YEAR, TODAY, yearsInRange } from "@/data/period"
+import { CURRENT_YEAR, TODAY } from "@/data/period"
 import { formatPaise, MONTHS_SHORT, percent } from "@/lib/format"
 import { canEditBooks } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -48,7 +49,7 @@ import { cn } from "@/lib/utils"
 export default function Contributions() {
   const { setContributionStatus } = useActions()
   const me = useCurrentUser()
-  const shell = useShell()
+  const years = useYearRange()
   const fundsModel = useFunds()
   const [year, setYear] = useState(CURRENT_YEAR)
   const [fundId, setFundId] = useState<string | null>(null)
@@ -56,7 +57,7 @@ export default function Contributions() {
   const [error, setError] = useState<string | null>(null)
 
   const model = useCollectionGrid(year, fundId)
-  const years = yearsInRange(shell.yearRange.from, shell.yearRange.to)
+  const selectable = years ?? [CURRENT_YEAR]
   // Only funds that can actually have dues are offered; a voluntary fund in
   // this list would just produce the "not applicable" message every time.
   const dueFunds = (fundsModel ?? []).filter(
@@ -167,7 +168,7 @@ export default function Contributions() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {years.map((y) => (
+                  {selectable.map((y) => (
                     <SelectItem key={y} value={String(y)}>
                       {y}
                     </SelectItem>

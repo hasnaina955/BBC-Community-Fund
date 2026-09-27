@@ -1,18 +1,30 @@
 import { query } from "./_generated/server"
 import { v } from "convex/values"
-import { requireActor, requireMember, type Actor } from "./lib/authz"
+import {
+  requireActor,
+  requireConsole as requireMember,
+  type Actor,
+} from "./lib/authz"
 
 /**
  * Read models.
  *
  * Every query resolves the actor first and filters by `orgId`, so a client
  * cannot ask for another organisation's data even by guessing an id.
+ *
+ * One exception, and it is `me` below: identity and role are not console data. A
+ * member has to be able to learn that they are a member, and every other query
+ * in this file is org-wide committee data, so they take `requireConsole` — the
+ * alias means the file's default is the strong gate and the exception is visible.
  */
 
 export const me = query({
   args: {},
   handler: async (ctx) => {
-    const actor = await requireMember(ctx)
+    // Not `requireMember`: this is the one query a plain member must be able to
+    // read, because it is what tells them which world they are in. It exposes
+    // nothing but their own identity and their own organisation's name.
+    const actor = await requireActor(ctx)
     const user = await ctx.db.get(actor.userId)
     const org = await ctx.db.get(actor.orgId)
     return {

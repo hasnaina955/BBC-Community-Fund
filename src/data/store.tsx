@@ -52,8 +52,8 @@ export interface CurrentUser {
  * Derived from the generated function reference rather than hand-written, so
  * the sidebar cannot drift from what the server actually returns.
  */
-export type Shell = Awaited<
-  ReturnType<NonNullable<(typeof api.aggregate.shell)["_fn"]>>
+export type Shell = NonNullable<
+  Awaited<ReturnType<NonNullable<(typeof api.aggregate.shell)["_fn"]>>>
 >
 
 export interface AppActions {
@@ -84,7 +84,6 @@ export interface AppActions {
 
 interface StoreValue {
   me: CurrentUser | null
-  shell: Shell | null
   isLoading: boolean
   error: string | null
   actions: AppActions
@@ -99,19 +98,21 @@ interface StoreValue {
  * that renders again — React's "Too many re-renders" loop, which unmounted the
  * whole console before a single screen could paint. A module-level constant
  * has a stable identity, so the subscription is created once.
+ *
+ * Identity only. The console's org-wide summary used to be in here as a second
+ * entry, which meant every signed-in visitor — including a plain member with no
+ * business seeing org totals — downloaded it before any screen was chosen. It now
+ * lives in `AppShell`, which only a committee member ever mounts. See
+ * `requireConsole` in `convex/lib/authz.ts`.
  */
-const SHELL_QUERIES = {
+const ME_QUERIES = {
   me: { query: api.data.me, args: {} },
-  shell: { query: api.aggregate.shell, args: {} },
 } as const
 
 const StoreContext = createContext<StoreValue | null>(null)
 
 /**
- * The two reads that are always live.
- *
- * Deliberately just `me` and the shell summary: identity, the org totals in the
- * sidebar, and the readiness signal the auth gate waits on.
+ * The one read that is always live: who you are.
  *
  * `useQueries`, not `useQuery`, and the difference is not cosmetic. `useQuery`
  * **rethrows** a server error; `useQueries` hands it back as a value. Since
@@ -122,11 +123,10 @@ const StoreContext = createContext<StoreValue | null>(null)
  * `/auth` reachable. Every screen hook in `data/queries.ts` does the same.
  */
 export function DataProvider({ children }: { children: ReactNode }) {
-  const { me, shell } = useQueries(SHELL_QUERIES)
+  const { me } = useQueries(ME_QUERIES)
 
-  const isLoading = me === undefined || shell === undefined
-  const firstError = [me, shell].find((r) => r instanceof Error)
-  const error = firstError instanceof Error ? firstError.message : null
+  const isLoading = me === undefined
+  const error = me instanceof Error ? me.message : null
 
   const mutateStatus = useMutation(api.members.setContributionStatus)
   const mutateMonth = useMutation(api.members.setMonthStatus)
@@ -171,8 +171,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   )
 
   const value = useMemo<StoreValue>(
-    () => ({ me: me ?? null, shell: shell ?? null, isLoading, error, actions }),
-    [me, shell, isLoading, error, actions],
+    () => ({ me: me ?? null, isLoading, error, actions }),
+    [me, isLoading, error, actions],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
@@ -193,12 +193,6 @@ export function useCurrentUser(): CurrentUser {
   const { me } = useStore()
   if (!me) throw new Error("useCurrentUser called before the session loaded")
   return me
-}
-
-export function useShell(): Shell {
-  const { shell } = useStore()
-  if (!shell) throw new Error("useShell called before the shell loaded")
-  return shell
 }
 
 export function useActions(): AppActions {

@@ -25,8 +25,8 @@ import { EmptyState, StatCard } from "@/components/shared/stat-card"
 import { CollectionModeBadge } from "@/components/shared/status-badge"
 import { WithReadModel } from "@/components/shared/read-model"
 import { useReports } from "@/data/queries"
-import { useShell } from "@/data/store"
-import { CURRENT_YEAR, yearsInRange } from "@/data/period"
+import { useYearRange } from "@/data/queries"
+import { CURRENT_YEAR } from "@/data/period"
 import {
   formatPaise,
   formatPaiseCompact,
@@ -76,10 +76,10 @@ function monthYear(iso: string | null): string {
  * own section, by what was collected, and never as a debt.
  */
 export default function Reports() {
-  const shell = useShell()
+  const years = useYearRange()
   const [year, setYear] = useState(CURRENT_YEAR)
   const model = useReports(year)
-  const years = yearsInRange(shell.yearRange.from, shell.yearRange.to)
+  const selectable = years ?? [CURRENT_YEAR]
 
   return (
     <WithReadModel data={model} label={`Loading the ${year} report`}>
@@ -110,7 +110,7 @@ export default function Reports() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {years.map((y) => (
+                  {selectable.map((y) => (
                     <SelectItem key={y} value={String(y)}>
                       {y}
                     </SelectItem>

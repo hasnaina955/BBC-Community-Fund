@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Navigate, useNavigate } from "react-router-dom"
+import { Navigate, useNavigate, useSearchParams } from "react-router-dom"
 import { useConvexAuth, useAuthActions } from "@convex-dev/auth/react"
 import { AlertCircle, Loader2, Lock } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,11 +12,35 @@ import { Label } from "@/components/ui/label"
  *
  * Email is lowercased and trimmed before it is sent, because the auth provider
  * matches accounts on the exact string. See convex/auth.ts.
+ *
+ * ## Where sign-in lands
+ *
+ * `RequireAuth` in `App.tsx` sends a signed-out visitor to
+ * `/auth?returnTo=<the page they asked for>`. This page used to ignore that and
+ * always navigate to `/`, which quietly broke every deep link in the app — a
+ * treasurer sent to a member's statement by a treasurer, or a member tapping a
+ * WhatsApp link to their own passbook, would sign in and land somewhere else
+ * with no explanation. So the parameter is honoured here.
+ *
+ * It is validated before use. `returnTo` is attacker-controllable — anyone can
+ * put a link in a WhatsApp message — so only same-origin *paths* are accepted.
+ * `//evil.example` and `https://evil.example` are both rejected, because
+ * `navigate("//evil.example")` is treated as a protocol-relative URL and would
+ * otherwise turn the sign-in form into an open redirect that harvests passwords.
  */
 export default function Auth() {
   const { isLoading, isAuthenticated } = useConvexAuth()
   const { signIn } = useAuthActions()
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+
+  const returnTo = (() => {
+    const raw = params.get("returnTo")
+    if (!raw) return "/"
+    // Must start with a single "/" and not "//": a path, never a host.
+    if (!raw.startsWith("/") || raw.startsWith("//")) return "/"
+    return raw
+  })()
 
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -24,7 +48,7 @@ export default function Auth() {
   const [busy, setBusy] = useState(false)
 
   if (isLoading) return null
-  if (isAuthenticated) return <Navigate to="/" replace />
+  if (isAuthenticated) return <Navigate to={returnTo} replace />
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -36,7 +60,7 @@ export default function Auth() {
         email: email.trim().toLowerCase(),
         password,
       })
-      navigate("/", { replace: true })
+      navigate(returnTo, { replace: true })
     } catch (err) {
       // Deliberately vague: telling the user which half was wrong would
       // confirm whether an account exists.

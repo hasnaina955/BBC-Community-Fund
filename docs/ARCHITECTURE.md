@@ -287,6 +287,121 @@ that already has entries — re-posting would double the money.
 
 ---
 
+## The member portal, and the role that made the console honest
+
+Everything above assumes the signed-in people and the committee are the same set.
+M3 broke that assumption by adding the `member` role — the first role that is
+signed in but is *not* on the committee — and in doing so exposed an assumption
+that had never been written down.
+
+### The hole the role opened
+
+Every read model in `data.ts`, `aggregate.ts` and `reconciliation.ts` was written
+against `requireMember`, which until M3 meant only "is signed in". That was not a
+slip; it was correct while every account belonged to somebody on the committee. But
+it meant the gate was doing no work. The moment a member account existed, those
+same read models would have returned the organisation's total balances, every
+member's arrears, the audit log and the bank passbooks — to a person holding a
+phone at a collection table.
+
+The fix is not a permission list. It is two different gates with two different
+names, so the choice is visible at the import line rather than inferred from a
+handler body:
+
+| Helper | Means | Used by |
+| --- | --- | --- |
+| `requireActor` | valid session, attached to an org, active | internally |
+| `requireMember` | any signed-in actor, member or not | `data:me`, the portal reads |
+| `requireConsole` | `atLeast(viewer)` — on the committee | every console read model |
+| `requireTreasurer` | `atLeast(treasurer)` | writes, and the portal's back office |
+| `requireAdmin` | `atLeast(admin)` | users, settings, the close |
+
+`aggregate.ts`, `reconciliation.ts` and `data.ts` import `requireConsole` *under
+the name `requireMember`*, so the 30-odd call sites did not have to be rewritten
+and — more to the point — a query added to those files later gets the strong gate
+by default. The safe default is the only name the file can call.
+
+`data:me` is the deliberate exception: identity and role are not console data, and
+a member has to be able to learn that they are one. The app-wide `DataProvider`
+subscribes to it and nothing else. The org-wide shell summary moved into
+`AppShell`, which only a committee member mounts, because while it lived in the
+provider every signed-in visitor downloaded it before any screen was chosen.
+
+`bun run check` asserts the refusal across the whole console read-model surface
+rather than one screen, because the failure mode is a *new* screen quietly reusing
+the weaker helper.
+
+### Why the portal never takes a member id
+
+A portal query that accepted `{ memberId }` would be a query that shows any
+member's dues to anyone who edits a URL. There is no code path in `convex/portal.ts`
+that takes a member id from a caller. `requireMyMember` resolves the member row
+from the session through the `members.userId` join, and every read starts there.
+
+A receipt that is not the caller's returns `null`, exactly as one that does not
+exist does. Distinguishing them would turn the receipt URL into an oracle for
+valid payment ids — "does a payment exist, for whom, and when".
+
+### Two ways to link, and why one of them asks a person
+
+Members are a community, not a customer base. A phone number is often shared
+across a household, and the secretary is the person who knows who is who.
+
+- **Self-claim**, on a verified email that exactly matches `members.email`.
+  Convex Auth owns email verification, so proving you own the address is Convex's
+  job. An ambiguous match is *refused*, not guessed: two rows sharing an address
+  need a person to say which is which, because silently picking one could show a
+  member their cousin's dues.
+- **Treasurer assignment**, for members with no email account or a shared one.
+  Asking the secretary to prove a cousin's identity by email is theatre.
+
+The treasurer's screen therefore counts the members who *have not* claimed, not
+the ones who have. A member without an account cannot see their own balance, will
+not know they owe anything, and will not chase anyone — so the committee is blind
+to them in a way it does not realise.
+
+### One writer for money, and a claim that writes nothing
+
+`recordPaymentFor` in `convex/lib/collection.ts` is the single implementation of
+"money arrives". A treasurer typing a payment at the desk and a treasurer
+confirming a member's claim both call it, so they produce identical rows,
+identical receipt numbering and identical settlement of arrears. If they were
+separate paths they would drift, and the drift would surface as a balance that
+does not reconcile.
+
+`portal:requestPayment` therefore writes **no money**. It creates a request a
+treasurer confirms, and only then does the confirmation reach the ledger — through
+the same checks the desk would have applied, so a claim cannot create a payment
+the collection path would have refused. One open request per member, because two
+pending claims for the same person is nearly always the same money entered twice.
+
+### Documents are queries, not URLs
+
+The first implementation of a receipt was an `httpAction` on `/receipt/:id`. It
+cannot work against a local deployment: **the local Convex backend serves no HTTP
+routes at all** — a fixed-string `/ping` route 404s, as do Convex Auth's own
+registered routes, and Convex documents local deployments as having no public URL.
+`convex/receipts.ts` documents this, because the shape looks correct and the
+reason it is wrong is not discoverable from the code.
+
+Going through a normal query is also the better experience on a phone:
+`window.print()` opens the platform sheet, which is where *Save as PDF* and
+*Share* live. The receipt and the passbook are therefore the page on screen, with
+`@media print` rules taking away the interface (`cf-chrome`, `print:hidden`) and
+nothing else — one renderer, so the paper and the screen cannot disagree.
+
+### The document is complete, the screen is capped
+
+`portal:summary` returns at most 50 receipts and computes its totals over
+everything — the right trade for a phone screen. `portal:statement` exists because
+that is the wrong trade for a document, which would have printed fifty payments
+above the words "received ₹96,400 over 212 payments". It reads one member's own
+rows in full, and its closing balance is the arithmetic of the two lists printed
+above it, so a member who adds it up gets the same number. Measured at **54.7 kB**
+for a member's entire eight-year history.
+
+---
+
 ## Collection modes
 
 The community runs three genuinely different kinds of fund, and the original
@@ -489,7 +604,8 @@ Rules:
 3. **Every** public function starts with an authorization helper that resolves
    the caller to `{ orgId, role, fundIds }`. There is no "check inside the
    handler" pattern; the helper is the gate.
-4. `member` is a role on a user, not a separate table. It gates the portal.
+4. `member` is a role on a user, not a separate table. It gates the portal, and
+   it is the reason the console has its own gate — see *The member portal* above.
 
 ---
 

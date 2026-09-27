@@ -1,6 +1,8 @@
 import { mutation, query } from "./_generated/server"
 import { v } from "convex/values"
-import { requireMember, requireTreasurer } from "./lib/authz"
+// The console gate, aliased for the same reason as in aggregate.ts: every read
+// model in this file belongs to the committee console.
+import { requireConsole as requireMember, requireTreasurer } from "./lib/authz"
 import { bankBalanceAsOf, readAllBalances } from "./lib/balances"
 import { recordAudit } from "./lib/audit"
 import { assertPaise, nowIso } from "./lib/money"

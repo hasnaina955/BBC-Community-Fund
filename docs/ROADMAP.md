@@ -20,7 +20,7 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **M2c** | Collection modes | M2a | **Done** | Only monthly dues can be arrears |
 | **V1** | Browser verification | M2c | **Done** | Every screen renders, and the numbers on it are the server's |
 | **M2d** | Reconciliation and close | M2a | **Done** | Balances reconcile with the bank |
-| **M3** | Member portal | M2 | Not started | A member is self-sufficient |
+| **M3** | Member portal | M2 | **Done** | A member is self-sufficient |
 | **M4** | Online collection | M2, M3 | Not started | A member can pay from a link |
 | **M5** | Reminders and arrears | M4 | Not started | Unpaid contributions get chased |
 | **M6** | Multi-tenancy | M2 | Not started | Two orgs, no data crossover |
@@ -332,21 +332,71 @@ what makes these products fail to get adopted.
 
 ### Scope
 
-- [ ] Add `email` to members; a `member` role
-- [ ] Optional member accounts, linked by phone or email
-- [ ] "What I owe" — current month, arrears, total outstanding
-- [ ] Contribution history and a printable passbook statement
-- [ ] Receipts list with download
-- [ ] Mark-as-paid request (for cash collected offline), requiring treasurer
+- [x] Add `email` to members; a `member` role
+- [x] Optional member accounts, linked by phone or email
+- [x] "What I owe" — current month, arrears, total outstanding
+- [x] Contribution history and a printable passbook statement
+- [x] Receipts list with download
+- [x] Mark-as-paid request (for cash collected offline), requiring treasurer
       confirmation
-- [ ] Mobile-first layout; installable PWA
-- [ ] WhatsApp-friendly share link
+- [x] Mobile-first layout; installable PWA
+- [x] WhatsApp-friendly share link
 
 ### Exit criteria
 
 - A member signs in with a link and sees a correct, itemised balance
 - A member downloads a receipt
 - A treasurer can see which members have claimed accounts
+
+All three are verified in a real browser — `bun run visual:portal`, 71 checks —
+and the refusals behind them are asserted at the API level by `bun run check`.
+
+### What was built, and the two decisions worth recording
+
+**The `member` role forced the console to be gated properly.** Every read model in
+`data.ts`, `aggregate.ts` and `reconciliation.ts` was written against
+`requireMember`, which until now meant only "is signed in". That was safe while
+every signed-in person was on the committee. The moment member accounts existed,
+those same read models would have handed a member the organisation's total
+balances, every member's arrears and the audit log. `requireConsole`
+(`convex/lib/authz.ts`) now gates them separately, and the three files import it
+under the old name so a query added there later cannot quietly pick up the weaker
+gate. The shell's org summary moved out of the app-wide `DataProvider` for the
+same reason: it was being downloaded by every signed-in visitor, including
+members who had no business seeing it.
+
+**Receipts are printed from a query, not served from a URL.** The first version
+was an `httpAction` on `/receipt/:id`, which is the obvious shape for "give me a
+document at a URL". It cannot work here: **the local Convex backend serves no
+HTTP routes at all** — a trivial `path: "/ping"` returning a fixed string 404s,
+as do Convex Auth's own registered routes, and Convex documents local deployments
+as having no public URL. A receipt that only works against a cloud deployment is
+a receipt that only works in production. Going through a normal query is also
+better for the person holding the phone: `window.print()` opens the platform
+sheet, which is where *Save as PDF* and *Share to WhatsApp* live, and a receipt
+that a member forwards to their spouse is the most likely thing to happen to it.
+
+**Claiming is deliberately two ways.** Self-claim matches a verified email against
+the address on file, and refuses an ambiguous match rather than guessing — a
+household address shared by two brothers must not show one his cousin's dues. That
+leaves members with no email, or sharing one, needing a person; so the treasurer
+gets a linking tool, and the screen deliberately counts the members who *cannot*
+see their own balance, because those are the ones the committee is blind to.
+
+**The passbook is a document, not a screen.** `portal:statement` exists because
+`summary` caps its receipt list at fifty to keep a phone fast while computing its
+totals over everything — the right trade for a screen and the wrong one for a
+document, which would have printed fifty payments above the words "received ₹96,400
+over 212 payments". The statement reads one member's own rows in full, and its
+closing balance is computed from the two lists above it, so a member who adds it
+up gets the same number. 54.7 kB for a member's entire eight-year history.
+
+**Verification note.** `bun run check` exercises the mark-as-paid loop by
+*refusing* a claim, not confirming one. Confirming writes a real payment,
+receipt number and ledger entry, and nothing in this product can undo a payment —
+a suite that permanently altered the books on each run would stop being a suite.
+The confirmation path's money-writing half is `recordPaymentFor`, the same
+function the desk uses, which `check` already drives directly.
 
 ---
 

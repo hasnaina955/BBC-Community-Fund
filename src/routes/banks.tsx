@@ -22,8 +22,8 @@ import { EmptyState } from "@/components/shared/stat-card"
 import { WithReadModel } from "@/components/shared/read-model"
 import { CollectionModeBadge } from "@/components/shared/status-badge"
 import { useBankPassbook, useBanks } from "@/data/queries"
-import { CURRENT_YEAR, yearsInRange } from "@/data/period"
-import { useShell } from "@/data/store"
+import { CURRENT_YEAR } from "@/data/period"
+import { useYearRange } from "@/data/queries"
 import { formatPaise, formatDate, monthLabel } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -34,13 +34,15 @@ import { cn } from "@/lib/utils"
  * than scanning back to 2018.
  */
 export default function Banks() {
-  const shell = useShell()
+  const years = useYearRange()
   const model = useBanks()
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<string | null>(null)
   const [year, setYear] = useState(CURRENT_YEAR)
 
-  const years = yearsInRange(shell.yearRange.from, shell.yearRange.to)
+  // The picker offers every year the community has members in. Until that range
+  // arrives it offers this one, which always exists.
+  const selectable = years ?? [CURRENT_YEAR]
 
   // Derived before the render prop, because the passbook query is a hook and
   // hooks cannot live inside a conditional callback.
@@ -200,7 +202,7 @@ export default function Banks() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {years.map((y) => (
+                                {selectable.map((y) => (
                                   <SelectItem key={y} value={String(y)}>
                                     {y}
                                   </SelectItem>

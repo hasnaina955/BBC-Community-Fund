@@ -20,6 +20,8 @@
     "check": "node scripts/check-security.mjs",
     "measure": "node scripts/measure-payload.mjs",
     "visual": "node scripts/visual-check.mjs",
+    "visual:portal": "node scripts/visual-portal.mjs",
+    "icons": "node scripts/make-icons.mjs",
     "balances:backfill": "node scripts/backfill-bank-years.mjs"
   },
   "dependencies": {

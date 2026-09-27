@@ -9,7 +9,7 @@ import {
 import { recordAudit, AUDIT } from "./lib/audit"
 import { assertPaise, assertPositive, nowIso } from "./lib/money"
 import { postEntry, postTransfer } from "./lib/ledger"
-import { hasDues } from "./lib/funds"
+import { recordPaymentFor } from "./lib/collection"
 import { category } from "./schema"
 
 /**
@@ -217,6 +217,11 @@ export const rejectTransaction = mutation({
  * and settles the member's oldest unpaid contributions against it, oldest
  * first. Allocating to specific months is what allows a member to pay two
  * months at once, which the legacy schema could not represent.
+ *
+ * The accounting itself lives in `lib/collection.recordPaymentFor`, because the
+ * member portal confirms a claimed payment through the very same function. Two
+ * implementations of "money arrives" would drift, and the drift would surface
+ * as a balance that does not reconcile.
  */
 export const recordPayment = mutation({
   args: {
@@ -237,118 +242,7 @@ export const recordPayment = mutation({
   },
   handler: async (ctx, args) => {
     const actor = await requireTreasurer(ctx)
-    assertPositive(args.amountPaise)
-    // A replayed request must not record the money twice.
-    if (args.idempotencyKey) {
-      const existing = await ctx.db
-        .query("payments")
-        .withIndex("by_idempotency", (q) =>
-          q.eq("idempotencyKey", args.idempotencyKey),
-        )
-        .first()
-      if (existing) return { paymentId: existing._id, receiptNo: existing.receiptNo }
-    }
-
-    const fund = await ctx.db.get(args.fundId)
-    if (!fund || fund.orgId !== actor.orgId) throw new Error("Fund not found")
-    assertCanWriteFund(actor, args.fundId)
-
-    if (args.memberId) {
-      const member = await ctx.db.get(args.memberId)
-      if (!member || member.orgId !== actor.orgId) throw new Error("Member not found")
-    }
-
-    // A round groups receipts for an unscheduled fund. Rejecting a round on a
-    // scheduled fund keeps the two collection styles from being mixed.
-    if (args.roundId) {
-      const round = await ctx.db.get(args.roundId)
-      if (!round || round.orgId !== actor.orgId) {
-        throw new Error("Collection session not found")
-      }
-      if (round.fundId !== args.fundId) {
-        throw new Error("That session belongs to a different fund")
-      }
-    }
-
-    const paidAt = args.paidAt ?? nowIso()
-
-    // Receipt numbers are sequential per organisation.
-    const recent = await ctx.db
-      .query("payments")
-      .withIndex("by_org", (q) => q.eq("orgId", actor.orgId))
-      .collect()
-    const receiptNo = `R-${String(recent.length + 1).padStart(5, "0")}`
-
-    const paymentId = await ctx.db.insert("payments", {
-      orgId: actor.orgId,
-      memberId: args.memberId,
-      fundId: args.fundId,
-      bankId: fund.bankId,
-      amountPaise: args.amountPaise,
-      method: args.method,
-      paidAt,
-      collectedBy: actor.userId,
-      receiptNo,
-      reference: args.reference?.trim() || undefined,
-      roundId: args.roundId,
-      idempotencyKey: args.idempotencyKey,
-      createdAt: Date.now(),
-    })
-
-    await postEntry(ctx, actor, {
-      fundId: args.fundId,
-      bankId: fund.bankId,
-      memberId: args.memberId,
-      amountPaise: args.amountPaise,
-      category: "donation",
-      effectiveDate: paidAt,
-      source: "payment",
-      refType: "payment",
-      refId: paymentId,
-      note: `Payment received — ${receiptNo}`,
-    })
-
-    // Settle the oldest unpaid contributions first — but only for a fund that
-    // actually has dues. On a voluntary or donation fund there is nothing to
-    // settle against, and the whole receipt is simply a gift.
-    let remaining = args.amountPaise
-    if (args.memberId && hasDues(fund)) {
-      const open = await ctx.db
-        .query("contributions")
-        .withIndex("by_member", (q) =>
-          q.eq("orgId", actor.orgId).eq("memberId", args.memberId!),
-        )
-        .collect()
-
-      const unpaid = open
-        .filter((c) => c.status === "due")
-        .sort((a, b) =>
-          a.year === b.year ? a.month - b.month : a.year - b.year,
-        )
-
-      for (const contribution of unpaid) {
-        if (remaining <= 0) break
-        const covers = remaining >= contribution.amountPaise
-        await ctx.db.patch(contribution._id, {
-          status: covers ? "paid" : "partial",
-        })
-        if (covers) {
-          remaining -= contribution.amountPaise
-        } else {
-          // A part payment settles part of the month and stops there.
-          remaining = 0
-        }
-      }
-    }
-
-    await recordAudit(ctx, actor, {
-      action: AUDIT.paymentRecorded,
-      entityType: "payment",
-      entityId: paymentId,
-      details: `${receiptNo} — ${args.amountPaise} paise by ${args.method}`,
-    })
-
-    return { paymentId, receiptNo, unallocatedPaise: remaining }
+    return recordPaymentFor(ctx, actor, args)
   },
 })
 

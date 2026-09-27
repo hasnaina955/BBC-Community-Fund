@@ -94,9 +94,37 @@ export const requireAdmin = (ctx: QueryCtx | MutationCtx) =>
 export const requireTreasurer = (ctx: QueryCtx | MutationCtx) =>
   requireRole(ctx, "treasurer")
 
-/** Anyone who can see the books, including members viewing their own dues. */
+/**
+ * Anyone signed in, member or not.
+ *
+ * Deliberately permissive, and used in exactly three places: `data:me` (identity
+ * and role, which a member needs in order to know what they are), and the portal
+ * read models, which are scoped to the caller's *own* member row and so cannot
+ * leak anything by being reachable. It is **not** the gate for the committee
+ * console — see `requireConsole`.
+ */
 export const requireMember = (ctx: QueryCtx | MutationCtx) =>
   requireActor(ctx)
+
+/**
+ * The committee console: anyone who may see the books.
+ *
+ * This is the gate M3 had to add, and it looks redundant until you notice what
+ * `requireMember` used to do everywhere. Before member accounts existed, "signed
+ * in" and "on the committee" were the same set of people, so every read model in
+ * `data.ts`, `aggregate.ts` and `reconciliation.ts` was written against
+ * `requireMember`. M3 introduces the `member` role — the first role that is
+ * signed in but is *not* on the committee — and those same read models would have
+ * handed it the org's total balances, every member's arrears and the audit log.
+ * The role would have been a new front door onto data that was never meant to
+ * have one.
+ *
+ * So the console is gated separately from identity, and a member who follows a
+ * console link gets a refusal from the server rather than a number they should
+ * not have. `bun run check` asserts a member is refused.
+ */
+export const requireConsole = (ctx: QueryCtx | MutationCtx) =>
+  requireRole(ctx, "viewer")
 
 /**
  * True when the actor may write to this fund. Admins, treasurers and viewers'
