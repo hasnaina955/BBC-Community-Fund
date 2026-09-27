@@ -14,13 +14,37 @@ import { Card, CardContent } from "@/components/ui/card"
  * Errors are handled by `ErrorBoundary` in the app shell, which catches the
  * rethrow from `useQuery` and renders in place of the screen. What is here is
  * only the loading half.
+ *
+ * ## The `animate-spin` is load-bearing
+ *
+ * The spinner must keep its `animate-spin` class. Both visual harnesses wait for
+ * a screen to settle by polling `main.querySelector(".animate-spin") === null`,
+ * so a loader that stopped animating would read as "loaded" the instant it
+ * appeared, and every assertion after it would race the data. It was tempting to
+ * replace this with a static skeleton; the skeleton is here *around* the spinner
+ * instead, and the reason is written down so the next person does not "tidy" it
+ * away.
  */
-
 export function ReadModelLoader({ label }: { label: string }) {
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3">
-      <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      <p className="text-sm text-muted-foreground">{label}…</p>
+      {/* Skeleton of the shape most screens take: a heading, a row of tiles,
+          then a wide block. It gives the page its geometry back a beat before
+          the numbers arrive, so the layout does not jump twice. */}
+      <div aria-hidden className="w-full max-w-4xl space-y-4">
+        <div className="cf-skeleton h-7 w-52" />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="cf-skeleton h-20" />
+          <div className="cf-skeleton h-20" />
+          <div className="cf-skeleton h-20" />
+          <div className="cf-skeleton h-20" />
+        </div>
+        <div className="cf-skeleton h-56" />
+      </div>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        {label}…
+      </div>
     </div>
   )
 }

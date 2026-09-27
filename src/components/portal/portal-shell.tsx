@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useCurrentUser } from "@/data/store"
+import { useTheme } from "@/lib/theme"
 import { ErrorBoundary } from "@/components/layout/error-boundary"
 import { Button } from "@/components/ui/button"
 
@@ -43,13 +44,14 @@ const TABS: ReadonlyArray<{
   { to: "/me/account", label: "Account", icon: UserRound },
 ]
 
-function useTheme() {
-  const [dark, setDark] = useState(
-    () => document.documentElement.classList.contains("dark"),
-  )
-  return { dark, toggle: () => setDark((d) => !d) }
-}
-
+/**
+ * The theme now comes from `@/lib/theme`. This shell used to keep its own copy
+ * that toggled the class but never wrote it to `localStorage`, so a member who
+ * chose dark mode in their portal and reloaded the page got light mode back.
+ * The console shell's copy did persist, which is why nobody noticed: a member
+ * is never shown the console, so the working half of the pair is the half they
+ * never load.
+ */
 export function PortalShell() {
   const me = useCurrentUser()
   const { dark, toggle } = useTheme()
@@ -123,17 +125,25 @@ export function PortalShell() {
               end={end}
               className={({ isActive }) =>
                 cn(
-                  "flex flex-col items-center gap-1 py-2.5 text-[11px] font-medium transition-colors",
+                  "relative flex flex-col items-center gap-1 py-2.5 text-[11px] transition-colors",
+                  // The active tab is marked with a saffron tab above the label
+                  // as well as by colour. On a cheap phone in daylight, a hue
+                  // change on a small label is the single least reliable signal
+                  // on the screen.
+                  "before:absolute before:top-0 before:h-0.5 before:w-8 before:rounded-full before:transition-colors",
                   isActive
-                    ? "text-primary"
-                    : "text-muted-foreground hover:text-foreground",
+                    ? "font-semibold text-foreground before:bg-primary"
+                    : "font-medium text-muted-foreground before:bg-transparent",
                 )
               }
             >
               {({ isActive }) => (
                 <>
                   <Icon
-                    className={cn("size-5", isActive && "stroke-[2.25]")}
+                    className={cn(
+                      "size-5 transition-colors",
+                      isActive ? "stroke-[2.25] text-primary" : "text-muted-foreground",
+                    )}
                   />
                   {label}
                 </>

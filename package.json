@@ -21,6 +21,7 @@
     "measure": "node scripts/measure-payload.mjs",
     "visual": "node scripts/visual-check.mjs",
     "visual:portal": "node scripts/visual-portal.mjs",
+    "visual:ui": "node scripts/visual-ui.mjs",
     "icons": "node scripts/make-icons.mjs",
     "balances:backfill": "node scripts/backfill-bank-years.mjs"
   },
@@ -39,7 +40,6 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "convex": "^1.17.0",
-    "framer-motion": "^11.15.0",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

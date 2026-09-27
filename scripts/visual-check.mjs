@@ -191,10 +191,31 @@ page.on("response", (r) => {
 async function settle(label) {
   currentLabel = label
   await page.waitForLoadState("domcontentloaded")
+  // Wait for the shell to have mounted *before* looking for a spinner.
+  //
+  // The predicate below falls back to `document.body`, and `body` has no
+  // `.animate-spin` in it — so before the app has rendered at all, "no spinner"
+  // is trivially true and this function returned instantly. That was invisible
+  // while the whole app was one eager chunk and the screen was already painted
+  // by the time the URL settled. Since the routes became `React.lazy`, there is
+  // a real window between "the router moved" and "the fallback is on screen",
+  // and the check sailed straight through it and asserted against a blank
+  // `<main>`. Three portal assertions failed for that reason and the product was
+  // never wrong.
+  //
+  // `main` is rendered by the shell in the same commit as the Suspense fallback
+  // inside it, so once `main` exists, either the spinner is there or the screen
+  // genuinely is. That makes the second wait sound.
+  try {
+    await page.waitForSelector("main", { timeout: 25_000 })
+  } catch {
+    /* recorded by the caller as a stuck loader */
+  }
   try {
     await page.waitForFunction(
       () => {
-        const main = document.querySelector("main") ?? document.body
+        const main = document.querySelector("main")
+        if (!main) return false
         return main.querySelector(".animate-spin") === null
       },
       null,

@@ -3,57 +3,102 @@
 @tailwind utilities;
 
 /*
- * Design tokens recovered verbatim from the original build
- * (legacy/assets/index-0GK1rzsZ.css). Values are bare HSL channels so they
- * compose with Tailwind's `<alpha-value>` placeholders. Do not convert these to
- * hex without updating tailwind.config.ts. See docs/RECOVERY.md.
+ * Design tokens.
+ *
+ * The values are bare HSL channels so they compose with Tailwind's
+ * `<alpha-value>` placeholders. Do not convert them to hex without updating
+ * tailwind.config.ts.
+ *
+ * **Provenance.** These started as a verbatim recovery of the original build's
+ * stylesheet (`legacy/assets/index-0GK1rzsZ.css`, see docs/RECOVERY.md) and were
+ * retuned during the UI work. The structure of the file — the token names, the
+ * bare `--alpha-value>` convention, the sidebar-above-the-page hierarchy — is
+ * still the recovered one, and the rest of the recovery notes depend on those
+ * names not moving. The *values* below are no longer the recovered ones, and the
+ * next section says why.
+ *
+ * ## Why these colours, and why they changed
+ *
+ * The original build used a single hue (262) for the sidebar, the buttons, the
+ * focus ring and the charts. It is a competent, entirely unremarkable indigo,
+ * and it is the colour that every dashboard template ships with, so it made
+ * this product look like a template rather than a tool somebody chose.
+ *
+ * This is a book-keeping application for a community organisation in India. It
+ * should look like a ledger: a warm paper ground, deep ink for structure, and
+ * one warm accent that reads as the colour of the community rather than of the
+ * software. So the structure moved to a **deep teal-ink** (hue 200) and the
+ * accent moved to **saffron** (hue ~30), which together are specific, high
+ * contrast against each other, and not a colour any component library ships.
+ *
+ * Two constraints shaped the exact values, and both are about text rather than
+ * about looks:
+ *
+ *   1. **`--primary` is a button background, so its foreground is near-black.**
+ *      Saffron at 92% saturation and 48% lightness has a luminance around 0.28.
+ *      White text on it is about 1.5:1 and unreadable; near-black is about 6.6:1.
+ *      This is why `--primary-foreground` is not white, which is unusual enough
+ *      to be worth stating rather than "correcting" later.
+ *   2. **The chart hues are darkened in light mode on purpose.** They are used
+ *      as `bg-chart-3/15` + `text-chart-3` badges and as 11px chart labels, and
+ *      a 58%-lightness green on white does not clear the contrast bar at that
+ *      size. The light-mode values are chosen for text first and for fills
+ *      second; the dark-mode values are the same hues brightened, because there
+ *      the background is near-black and the maths runs the other way.
+ *
+ * Chart meaning is preserved and must not be reshuffled: **chart-3 is money in,
+ * chart-5 is money out**, and the dashboard and the reports screen both rely on
+ * that reading.
  */
 @layer base {
   :root {
     --button-outline: rgba(0, 0, 0, 0.1);
     --badge-outline: rgba(0, 0, 0, 0.05);
     --opaque-button-border-intensity: -8;
-    --elevate-1: rgba(0, 0, 0, 0.03);
-    --elevate-2: rgba(0, 0, 0, 0.08);
+    --elevate-1: rgba(20, 12, 0, 0.028);
+    --elevate-2: rgba(20, 12, 0, 0.06);
 
-    --background: 240 12% 97%;
-    --foreground: 240 20% 10%;
-    --border: 240 10% 88%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 20% 10%;
-    --card-border: 240 10% 91%;
+    /* Warm paper, not white. A ledger is not a screen of pure white. */
+    --background: 40 24% 97%;
+    --foreground: 200 26% 12%;
+    --border: 36 14% 86%;
+    --card: 40 30% 99%;
+    --card-foreground: 200 26% 12%;
+    --card-border: 36 16% 89%;
 
-    --sidebar: 244 40% 11%;
-    --sidebar-foreground: 240 15% 88%;
-    --sidebar-border: 244 30% 18%;
-    --sidebar-primary: 262 80% 66%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 244 30% 18%;
-    --sidebar-accent-foreground: 240 15% 88%;
-    --sidebar-ring: 262 80% 66%;
+    /* Structure: deep teal-ink, dark in both themes. */
+    --sidebar: 200 38% 9%;
+    --sidebar-foreground: 40 12% 88%;
+    --sidebar-border: 200 26% 16%;
+    --sidebar-primary: 33 92% 56%;
+    --sidebar-primary-foreground: 200 45% 7%;
+    --sidebar-accent: 200 24% 16%;
+    --sidebar-accent-foreground: 40 14% 94%;
+    --sidebar-ring: 33 92% 56%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 20% 10%;
-    --popover-border: 240 10% 88%;
+    --popover: 40 30% 99%;
+    --popover-foreground: 200 26% 12%;
+    --popover-border: 36 14% 84%;
 
-    --primary: 262 80% 60%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 10% 93%;
-    --secondary-foreground: 240 20% 10%;
-    --muted: 240 10% 93%;
-    --muted-foreground: 240 10% 48%;
-    --accent: 262 40% 94%;
-    --accent-foreground: 262 70% 40%;
-    --destructive: 0 72% 50%;
+    --primary: 27 94% 48%;
+    --primary-foreground: 200 50% 7%;
+    --secondary: 36 20% 92%;
+    --secondary-foreground: 200 26% 16%;
+    --muted: 36 18% 93%;
+    --muted-foreground: 200 8% 42%;
+    --accent: 30 62% 93%;
+    --accent-foreground: 22 82% 32%;
+    --destructive: 2 66% 45%;
     --destructive-foreground: 0 0% 100%;
-    --input: 240 10% 80%;
-    --ring: 262 80% 60%;
+    --success: 152 58% 28%;
+    --input: 36 14% 78%;
+    --ring: 27 94% 44%;
 
-    --chart-1: 262 80% 60%;
-    --chart-2: 199 90% 48%;
-    --chart-3: 142 72% 44%;
-    --chart-4: 43 92% 52%;
-    --chart-5: 14 86% 56%;
+    --chart-1: 27 88% 42%;
+    --chart-2: 196 74% 32%;
+    --chart-3: 152 58% 28%;
+    --chart-4: 32 86% 36%;
+    --chart-5: 4 70% 45%;
 
     --font-sans: "General Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
     --font-serif: Georgia, "Times New Roman", serif;
@@ -61,19 +106,20 @@
 
     --radius: 0.625rem;
 
-    --shadow-2xs: 0px 1px 2px 0px hsl(240 20% 10% / 0.04);
-    --shadow-xs: 0px 2px 4px 0px hsl(240 20% 10% / 0.06);
-    --shadow-sm: 0px 2px 4px 0px hsl(240 20% 10% / 0.06),
-      0px 4px 8px -2px hsl(240 20% 10% / 0.04);
-    --shadow: 0px 4px 6px 0px hsl(240 20% 10% / 0.06),
-      0px 8px 16px -4px hsl(240 20% 10% / 0.06);
-    --shadow-md: 0px 4px 8px 0px hsl(240 20% 10% / 0.06),
-      0px 12px 24px -4px hsl(240 20% 10% / 0.08);
-    --shadow-lg: 0px 8px 16px 0px hsl(240 20% 10% / 0.06),
-      0px 20px 40px -8px hsl(240 20% 10% / 0.12);
-    --shadow-xl: 0px 12px 24px 0px hsl(240 20% 10% / 0.08),
-      0px 32px 56px -8px hsl(240 20% 10% / 0.16);
-    --shadow-2xl: 0px 24px 48px 0px hsl(240 20% 10% / 0.2);
+    --shadow-2xs: 0px 1px 2px 0px hsl(200 26% 12% / 0.05);
+    --shadow-xs: 0px 1px 2px 0px hsl(200 26% 12% / 0.06),
+      0px 2px 4px 0px hsl(200 26% 12% / 0.04);
+    --shadow-sm: 0px 2px 4px 0px hsl(200 26% 12% / 0.06),
+      0px 4px 8px -2px hsl(200 26% 12% / 0.05);
+    --shadow: 0px 4px 6px 0px hsl(200 26% 12% / 0.06),
+      0px 8px 16px -4px hsl(200 26% 12% / 0.06);
+    --shadow-md: 0px 4px 8px 0px hsl(200 26% 12% / 0.06),
+      0px 12px 24px -4px hsl(200 26% 12% / 0.08);
+    --shadow-lg: 0px 8px 16px 0px hsl(200 26% 12% / 0.07),
+      0px 20px 40px -8px hsl(200 26% 12% / 0.12);
+    --shadow-xl: 0px 12px 24px 0px hsl(200 26% 12% / 0.09),
+      0px 32px 56px -8px hsl(200 26% 12% / 0.15);
+    --shadow-2xl: 0px 24px 48px 0px hsl(200 26% 12% / 0.18);
 
     --tracking-normal: 0em;
     --spacing: 0.25rem;
@@ -84,63 +130,78 @@
     --badge-outline: rgba(255, 255, 255, 0.05);
     --opaque-button-border-intensity: 9;
     --elevate-1: rgba(255, 255, 255, 0.04);
-    --elevate-2: rgba(255, 255, 255, 0.09);
+    --elevate-2: rgba(255, 255, 255, 0.08);
 
-    --background: 244 25% 8%;
-    --foreground: 240 15% 92%;
-    --border: 244 20% 18%;
-    --card: 244 22% 11%;
-    --card-foreground: 240 15% 92%;
-    --card-border: 244 20% 16%;
+    --background: 200 24% 7%;
+    --foreground: 40 14% 92%;
+    --border: 200 16% 18%;
+    --card: 200 20% 10%;
+    --card-foreground: 40 14% 92%;
+    --card-border: 200 16% 16%;
 
-    --sidebar: 244 28% 7%;
-    --sidebar-foreground: 240 15% 88%;
-    --sidebar-border: 244 25% 14%;
-    --sidebar-primary: 262 80% 70%;
-    --sidebar-primary-foreground: 244 28% 7%;
-    --sidebar-accent: 244 25% 16%;
-    --sidebar-accent-foreground: 240 15% 88%;
-    --sidebar-ring: 262 80% 70%;
+    --sidebar: 200 40% 6%;
+    --sidebar-foreground: 40 12% 88%;
+    --sidebar-border: 200 26% 13%;
+    --sidebar-primary: 34 94% 60%;
+    --sidebar-primary-foreground: 200 45% 6%;
+    --sidebar-accent: 200 24% 15%;
+    --sidebar-accent-foreground: 40 14% 94%;
+    --sidebar-ring: 34 94% 60%;
 
-    --popover: 244 22% 12%;
-    --popover-foreground: 240 15% 92%;
-    --popover-border: 244 20% 18%;
+    --popover: 200 20% 12%;
+    --popover-foreground: 40 14% 92%;
+    --popover-border: 200 16% 20%;
 
-    --primary: 262 80% 70%;
-    --primary-foreground: 244 28% 7%;
-    --secondary: 244 20% 18%;
-    --secondary-foreground: 240 15% 92%;
-    --muted: 244 20% 18%;
-    --muted-foreground: 244 10% 58%;
-    --accent: 244 25% 16%;
-    --accent-foreground: 262 80% 75%;
-    --destructive: 0 72% 58%;
+    --primary: 33 95% 56%;
+    --primary-foreground: 200 50% 6%;
+    --secondary: 200 18% 17%;
+    --secondary-foreground: 40 14% 92%;
+    --muted: 200 18% 17%;
+    --muted-foreground: 200 10% 62%;
+    --accent: 200 22% 17%;
+    --accent-foreground: 34 92% 70%;
+    --destructive: 4 72% 56%;
     --destructive-foreground: 0 0% 100%;
-    --input: 244 20% 28%;
-    --ring: 262 80% 70%;
+    /*
+     * Brighter than the other chart greens on purpose. The light-mode value is a
+     * deep green chosen for text on a light card; carried over unchanged it
+     * measured 5.63:1 as text here against 11.42:1 at this lightness. `bun run
+     * visual:ui` measures both themes from the computed style, so this number is
+     * the reason the token is what it is rather than a guess.
+     */
+    --success: 150 58% 68%;
+    --input: 200 16% 26%;
+    --ring: 33 95% 60%;
 
-    --chart-1: 262 80% 70%;
-    --chart-2: 199 90% 60%;
-    --chart-3: 142 72% 54%;
-    --chart-4: 43 92% 62%;
-    --chart-5: 14 86% 64%;
+    --chart-1: 33 92% 60%;
+    --chart-2: 190 82% 55%;
+    --chart-3: 152 52% 50%;
+    --chart-4: 38 92% 62%;
+    --chart-5: 6 78% 64%;
 
-    --shadow-2xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.16);
-    --shadow-xs: 0px 2px 4px 0px hsl(0 0% 0% / 0.2);
-    --shadow-sm: 0px 2px 4px 0px hsl(0 0% 0% / 0.2),
-      0px 4px 8px -2px hsl(0 0% 0% / 0.16);
-    --shadow: 0px 4px 6px 0px hsl(0 0% 0% / 0.24),
-      0px 8px 16px -4px hsl(0 0% 0% / 0.2);
-    --shadow-md: 0px 4px 8px 0px hsl(0 0% 0% / 0.24),
-      0px 12px 24px -4px hsl(0 0% 0% / 0.28);
-    --shadow-lg: 0px 8px 16px 0px hsl(0 0% 0% / 0.28),
-      0px 20px 40px -8px hsl(0 0% 0% / 0.32);
+    --shadow-2xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.2);
+    --shadow-xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.24),
+      0px 2px 4px 0px hsl(0 0% 0% / 0.2);
+    --shadow-sm: 0px 2px 4px 0px hsl(0 0% 0% / 0.24),
+      0px 4px 8px -2px hsl(0 0% 0% / 0.2);
+    --shadow: 0px 4px 6px 0px hsl(0 0% 0% / 0.28),
+      0px 8px 16px -4px hsl(0 0% 0% / 0.24);
+    --shadow-md: 0px 4px 8px 0px hsl(0 0% 0% / 0.28),
+      0px 12px 24px -4px hsl(0 0% 0% / 0.32);
+    --shadow-lg: 0px 8px 16px 0px hsl(0 0% 0% / 0.32),
+      0px 20px 40px -8px hsl(0 0% 0% / 0.38);
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+  }
+
+  html {
+    /* The mobile portal uses 100dvh; without this the address bar overlays the
+       bottom tab bar on a phone that has never been scrolled. */
+    -webkit-tap-highlight-color: transparent;
   }
 
   body {
@@ -154,7 +215,24 @@
   .tabular {
     font-variant-numeric: tabular-nums;
   }
-}@layer components {
+
+  /*
+   * A visible focus ring on everything, once.
+   *
+   * This app is used by people typing into forms on a phone and by a treasurer
+   * moving through the sidebar by keyboard. Both need to be able to see where
+   * they are, and neither could before: the default ring is suppressed by
+   * several controls and there was no replacement. `:focus-visible` rather than
+   * `:focus` so a mouse click does not leave a ring behind on a button.
+   */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: calc(var(--radius) - 2px);
+  }
+}
+
+@layer components {
   /* Subtle grid texture used behind the app shell. */
   .cf-grid-bg {
     background-image: linear-gradient(
@@ -168,6 +246,81 @@
         transparent 1px
       );
     background-size: 32px 32px;
+  }
+
+  /*
+   * A card that lifts on hover, for rows and tiles that are actually links.
+   * Applied deliberately, not globally — a grid of 84 member rows that all
+   * shift on hover is noise.
+   */
+  .cf-lift {
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      transform 150ms ease;
+  }
+
+  .cf-lift:hover {
+    border-color: hsl(var(--primary) / 0.45);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* A section heading inside a dense screen: quiet, but not invisible. */
+  .cf-eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-wider text-muted-foreground;
+  }
+
+  /* Shimmer for loading placeholders. */
+  .cf-skeleton {
+    @apply animate-pulse rounded-md bg-muted;
+  }
+}
+
+@layer utilities {
+  /* Thin, themed scrollbars. The default ones are a wide grey slab on desktop
+     and, on Android, steal a strip of screen from a 390px phone. */
+  .cf-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  .cf-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .cf-scroll::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 999px;
+  }
+
+  .cf-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Fades the bottom of a scroll container so a cut-off row reads as
+     "there is more" rather than as a rendering fault. */
+  .cf-fade-bottom {
+    mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+  }
+}
+
+/*
+ * Respecting the motion preference.
+ *
+ * `prefers-reduced-motion` is the difference between an interface that feels
+ * considered and one that makes somebody feel ill. Every transition in this
+ * app is decorative — no motion carries meaning — so the whole set collapses to
+ * nothing rather than being selectively reduced.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -200,7 +353,8 @@
     --muted: 0 0% 96%;
     --muted-foreground: 240 5% 45%;
     --border: 240 10% 85%;
-    --primary: 262 80% 45%;
+    --primary: 27 94% 40%;
+    --primary-foreground: 0 0% 100%;
   }
 
   html,
@@ -241,4 +395,3 @@
     margin: 14mm;
   }
 }
-
