@@ -14,7 +14,7 @@ import { WithReadModel } from "@/components/shared/read-model"
 import { useActions, useCurrentUser } from "@/data/store"
 import { useApprovals } from "@/data/queries"
 import { formatPaise, formatDate } from "@/lib/format"
-import { CATEGORY_LABELS, type TransactionCategory } from "@/lib/types"
+import { CATEGORY_LABELS, canApprove, type TransactionCategory } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 /**
@@ -29,6 +29,11 @@ export default function Approvals() {
   const model = useApprovals()
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // A viewer can see the queue but must not be handed a button that writes to
+  // the ledger. The server refuses it either way; this stops the dead end.
+  const canDecide = canApprove(me.role)
 
   const pending = model ?? []
   const totalPaise = pending.reduce((acc, t) => acc + t.amountPaise, 0)
@@ -37,8 +42,13 @@ export default function Approvals() {
 
   const decide = async (id: string, decision: "approved" | "rejected") => {
     setBusy(id)
+    setError(null)
     try {
       await setTransactionStatus(id, decision, notes[id])
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "That decision could not be saved.",
+      )
     } finally {
       setBusy(null)
     }
@@ -47,11 +57,16 @@ export default function Approvals() {
   return (
     <WithReadModel data={model} label="Loading the queue">
       {() => (
-        <div className="space-y-6">
-          <PageHeader
-            title="Pending Approvals"
-            description="Awaiting review. Nothing here has moved a balance yet."
-          />
+        <div className="space-y-6">            <PageHeader
+              title="Pending Approvals"
+              description="Awaiting review. Nothing here has moved a balance yet."
+            />
+
+            {error ? (
+              <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </p>
+            ) : null}
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard label="Awaiting review" value={String(pending.length)} />
@@ -159,27 +174,36 @@ export default function Approvals() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() => decide(txn.id, "approved")}
-                            disabled={busy === txn.id || isSelf}
-                            title={
-                              isSelf
-                                ? "A requester cannot approve their own transaction"
-                                : undefined
-                            }
-                          >
-                            <CheckCircle2 className="size-4" />
-                            {busy === txn.id ? "Approving..." : "Approve"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => decide(txn.id, "rejected")}
-                            disabled={busy === txn.id}
-                          >
-                            <XCircle className="size-4" /> Reject
-                          </Button>
+                          {canDecide ? (
+                            <>
+                              <Button
+                                size="sm"
+                                onClick={() => void decide(txn.id, "approved")}
+                                disabled={busy === txn.id || isSelf}
+                                title={
+                                  isSelf
+                                    ? "A requester cannot approve their own transaction"
+                                    : undefined
+                                }
+                              >
+                                <CheckCircle2 className="size-4" />
+                                {busy === txn.id ? "Approving..." : "Approve"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void decide(txn.id, "rejected")}
+                                disabled={busy === txn.id}
+                              >
+                                <XCircle className="size-4" /> Reject
+                              </Button>
+                            </>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              View only — approving a request moves real money,
+                              so it needs a treasurer.
+                            </p>
+                          )}
                           {isSelf ? (
                             <p className="text-xs text-muted-foreground">
                               You requested this — a second person must approve

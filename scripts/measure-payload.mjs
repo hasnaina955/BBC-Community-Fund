@@ -47,6 +47,7 @@ const AGGREGATES = [
   ["aggregate:fundDetail", { fundId: "@fund" }, "Fund detail"],
   ["aggregate:banks", {}, "Banks"],
   ["aggregate:bankPassbook", { bankId: "@bank", year: 2026, limit: 40 }, "Bank passbook"],
+  ["reconciliation:status", {}, "Reconciliation"],
   ["aggregate:members", { filter: "all" }, "Members"],
   ["aggregate:memberPassbook", { memberId: "@member" }, "Member passbook"],
   ["aggregate:grid", { year: 2026 }, "Collection grid"],

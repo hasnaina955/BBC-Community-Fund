@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom"
 import { Lock, Settings as SettingsIcon, ShieldAlert } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -150,7 +151,12 @@ export default function Settings() {
                 </li>
                 <li>
                   Financial years are locked when closed, so a closed period
-                  cannot be edited afterwards.
+                  cannot be edited afterwards. Closing happens on the{" "}
+                  <Link to="/reconciliation" className="underline">
+                    reconciliation screen
+                  </Link>
+                  , which will not let a year close while an account has an
+                  unexplained difference.
                 </li>
               </ul>
             </div>

@@ -63,11 +63,23 @@ export default function Banks() {
             />
 
             {filtered.length === 0 ? (
-              <EmptyState
-                icon={Building2}
-                title="No accounts match"
-                description="Try a different search."
-              />
+              <div className="space-y-4">
+                {/* The search box has to live outside the result branch. Inside
+                    it, a search that matched nothing unmounted the only control
+                    that could undo the search, stranding the treasurer on an
+                    empty screen with no way back but a reload. */}
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search accounts"
+                  className="max-w-xs"
+                />
+                <EmptyState
+                  icon={Building2}
+                  title="No accounts match"
+                  description="Try a different search — or clear the box above."
+                />
+              </div>
             ) : (
               <div className="grid gap-4 lg:grid-cols-3">
                 <div className="space-y-3">

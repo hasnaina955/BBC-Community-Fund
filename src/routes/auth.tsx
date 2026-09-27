@@ -127,7 +127,9 @@ export default function Auth() {
 
         <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
           <p className="font-medium text-foreground">Demo accounts</p>
-          <p className="mt-1">seeding the deployment, every account uses</p>
+          <p className="mt-1">
+            With the demo deployment seeded, every account uses
+          </p>
           <p className="tabular mt-1 font-medium text-foreground">
             community123
           </p>

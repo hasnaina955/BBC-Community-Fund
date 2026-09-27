@@ -15,6 +15,7 @@ import type * as collections from "../collections.js";
 import type * as data from "../data.js";
 import type * as funds from "../funds.js";
 import type * as http from "../http.js";
+import type * as lib_arrears from "../lib/arrears.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_authz from "../lib/authz.js";
 import type * as lib_balances from "../lib/balances.js";
@@ -23,6 +24,7 @@ import type * as lib_ledger from "../lib/ledger.js";
 import type * as lib_money from "../lib/money.js";
 import type * as lib_password from "../lib/password.js";
 import type * as members from "../members.js";
+import type * as reconciliation from "../reconciliation.js";
 import type * as seed from "../seed.js";
 import type * as transactions from "../transactions.js";
 
@@ -40,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   data: typeof data;
   funds: typeof funds;
   http: typeof http;
+  "lib/arrears": typeof lib_arrears;
   "lib/audit": typeof lib_audit;
   "lib/authz": typeof lib_authz;
   "lib/balances": typeof lib_balances;
@@ -48,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   "lib/money": typeof lib_money;
   "lib/password": typeof lib_password;
   members: typeof members;
+  reconciliation: typeof reconciliation;
   seed: typeof seed;
   transactions: typeof transactions;
 }>;

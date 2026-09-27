@@ -31,10 +31,11 @@ import {
   FundTypeBadge,
 } from "@/components/shared/status-badge"
 import { WithReadModel } from "@/components/shared/read-model"
-import { useActions } from "@/data/store"
+import { useActions, useCurrentUser } from "@/data/store"
 import { useFunds } from "@/data/queries"
 import { formatPaise, percent } from "@/lib/format"
 import {
+  canEditBooks,
   COLLECTION_MODE_HINTS,
   COLLECTION_MODE_LABELS,
   FUND_TYPE_LABELS,
@@ -58,6 +59,7 @@ const MODES = Object.keys(COLLECTION_MODE_LABELS) as CollectionMode[]
  */
 export default function Funds() {
   const { addFund } = useActions()
+  const me = useCurrentUser()
   const model = useFunds()
   const [query, setQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState<"all" | FundType>("all")
@@ -67,6 +69,9 @@ export default function Funds() {
   const [mode, setMode] = useState<CollectionMode>("fixed_monthly")
   const [monthly, setMonthly] = useState("100")
   const [target, setTarget] = useState("")
+  const [error, setError] = useState<string | null>(null)
+
+  const canCreate = canEditBooks(me.role)
 
   return (
     <WithReadModel data={model} label="Loading funds">
@@ -82,18 +87,26 @@ export default function Funds() {
         })
         const total = funds.reduce((acc, f) => acc + f.balancePaise, 0)
 
-        const handleCreate = () => {
+        const handleCreate = async () => {
           const trimmed = name.trim()
           if (trimmed.length < 2) return
-          void addFund({
-            name: trimmed,
-            type,
-            collectionMode: mode,
-            monthlyRupees: mode === "fixed_monthly" ? Number(monthly) || 0 : 0,
-            targetRupees: target ? Number(target) : undefined,
-          })
-          setName("")
-          setTarget("")
+          setError(null)
+          try {
+            await addFund({
+              name: trimmed,
+              type,
+              collectionMode: mode,
+              monthlyRupees:
+                mode === "fixed_monthly" ? Number(monthly) || 0 : 0,
+              targetRupees: target ? Number(target) : undefined,
+            })
+            setName("")
+            setTarget("")
+          } catch (err) {
+            setError(
+              err instanceof Error ? err.message : "That fund could not be created.",
+            )
+          }
         }
 
         return (
@@ -104,9 +117,18 @@ export default function Funds() {
             >
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button size="sm">
-                    <Plus className="size-4" /> Add fund
-                  </Button>
+                  {/* Only a treasurer may create a fund; offering the dialog to
+                      a viewer produced a form whose submit button could only
+                      ever be refused by the server. */}
+                  {canCreate ? (
+                    <Button size="sm">
+                      <Plus className="size-4" /> Add fund
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline" disabled title="Treasurer access required">
+                      <Plus className="size-4" /> Add fund
+                    </Button>
+                  )}
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
@@ -208,7 +230,7 @@ export default function Funds() {
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
-                      onClick={handleCreate}
+                      onClick={() => void handleCreate()}
                       disabled={name.trim().length < 2}
                     >
                       Create fund
@@ -217,6 +239,12 @@ export default function Funds() {
                 </AlertDialogContent>
               </AlertDialog>
             </PageHeader>
+
+            {error ? (
+              <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </p>
+            ) : null}
 
             <Card>
               <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center">

@@ -90,6 +90,21 @@ interface StoreValue {
   actions: AppActions
 }
 
+/**
+ * The query set, hoisted to module scope on purpose.
+ *
+ * `useQueries` keys its subscription on the *identity* of the object it is
+ * given, not its contents. An inline literal therefore produces a new
+ * subscription on every render, each one re-subscribing and firing a callback
+ * that renders again — React's "Too many re-renders" loop, which unmounted the
+ * whole console before a single screen could paint. A module-level constant
+ * has a stable identity, so the subscription is created once.
+ */
+const SHELL_QUERIES = {
+  me: { query: api.data.me, args: {} },
+  shell: { query: api.aggregate.shell, args: {} },
+} as const
+
 const StoreContext = createContext<StoreValue | null>(null)
 
 /**
@@ -107,10 +122,7 @@ const StoreContext = createContext<StoreValue | null>(null)
  * `/auth` reachable. Every screen hook in `data/queries.ts` does the same.
  */
 export function DataProvider({ children }: { children: ReactNode }) {
-  const { me, shell } = useQueries({
-    me: { query: api.data.me, args: {} },
-    shell: { query: api.aggregate.shell, args: {} },
-  })
+  const { me, shell } = useQueries(SHELL_QUERIES)
 
   const isLoading = me === undefined || shell === undefined
   const firstError = [me, shell].find((r) => r instanceof Error)
