@@ -406,7 +406,8 @@ function the desk uses, which `check` already drives directly.
 
 ### Scope
 
-- [ ] Stripe integration: UPI and cards
+- [ ] Payment gateway integration: UPI and cards (provider decision deferred —
+      see [M4-PLAN.md](./M4-PLAN.md))
 - [ ] Payment link or per-member checkout for a contribution
 - [ ] Per-fund QR code for treasurer-generated payments
 - [ ] Webhook endpoint, signature verification, **idempotent processing**

@@ -8,13 +8,21 @@ Related: [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md)
 
 ---
 
-## Payments — Stripe
+## Payments — provider not yet chosen
 
 **Milestone:** M4 · **Purpose:** accept UPI and card payments for contributions
 
-Chosen because it covers hosted checkout, recurring billing, and signed webhooks
-without building a gateway, and supports UPI when the account is configured for
-India.
+> **The provider decision is deferred.** The text below is the original
+> pre-commitment to Stripe and is **not** an adopted choice. Research found
+> Stripe is invite-only in India, so its UPI support is only reachable on an
+> account this organisation cannot self-serve; that is why it went under review.
+> See [M4-PLAN.md](./M4-PLAN.md) for the survey, the decision record, and the
+> provider-independent work that ships while the choice is open. Nothing below
+> is implemented, and no keys should be provisioned against it yet.
+
+Originally chosen because it covers hosted checkout, recurring billing, and
+signed webhooks without building a gateway, and supports UPI when the account is
+configured for India.
 
 > **On India-specific depth:** Stripe supports UPI through India account
 > configuration, but it is a global gateway with an India region. If UPI
@@ -23,6 +31,14 @@ India.
 > India-native gateway before committing. The integration is written behind a
 > thin `lib/payments.ts` interface precisely so the provider can be swapped
 > without touching the ledger.
+
+### Provider-independent
+
+True of every candidate, and settled regardless of which is chosen: no provider
+is ever a second writer of money. `recordPaymentFor` in
+`convex/lib/collection.ts` remains the only place a payment becomes a receipt
+and a ledger entry, and a client's browser never asserts that a payment
+succeeded.
 
 ### What gets built
 
