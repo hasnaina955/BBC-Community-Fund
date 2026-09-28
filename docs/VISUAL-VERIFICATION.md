@@ -7,7 +7,7 @@ numbers on screen against the read model that produced them, and asserts the
 seeded deployment.
 
 The latest pass was run on 28 September 2026 against 10,051 ledger entries
-spanning 2018–2026: **248 checks, all passing.** Two defects that made *every*
+spanning 2018–2026: **263 checks, all passing.** Two defects that made *every*
 screen blank were found this way; neither was visible to `bun run check`,
 `bun run smoke` or `bun run measure`, all of which speak HTTP and never render a
 pixel.
@@ -25,6 +25,7 @@ pixel.
 | Error paths | A malformed fund id, a deactivated account, an unknown URL, `/auth` while signed in. |
 | Money, written live | The collection desk opens a session, records cash and cheque against it, and the running total, the receipt number and the member's balance all follow. |
 | Reminders | The arrears list is populated and sorted longest-outstanding first, the ageing is bucketed, a search with no matches says so rather than showing everyone, and pressing the button confirms first and then leaves a row. |
+| The CSV export | The download is captured off the disk and parsed: a real file, a BOM, RFC 4180 quoting, one record per row on screen in the screen's order, amounts that total the server's own figure, and a filtered list that exports only the filtered rows. |
 
 The `skip` assertions are direct rather than inferred. Convex records a query
 subscription as an `Add` in a `ModifyQuerySet` message and releases it with a
@@ -207,7 +208,8 @@ counted.
 
 ### What the group asserts
 
-Twelve checks, plus the four the route sweep adds for every new route.
+Twelve checks, plus the four the route sweep adds for every new route, plus
+fifteen for the export.
 
 - The screen states plainly that no provider is connected, and **offers no
   button that would claim to have sent something**.
@@ -227,6 +229,43 @@ The consent rules are **not** here. That a treasurer cannot agree to reminders o
 a member's behalf is an authorisation fact, and it is asserted in
 `bun run check` where it can be tried from every role rather than from one
 screen.
+
+### The export, read back off the disk
+
+Fifteen further checks, and they are the only ones in the suite that assert on a
+**file** rather than a screen. A button that builds a correct-looking string and
+never hands it to the browser passes every other check in this group, and the
+treasurer discovers it standing in front of the committee.
+
+So the download is captured, read from disk, and parsed with the *same* parser
+`src/lib/csv.ts` exports — a CSV parser written twice is a parser that disagrees
+with itself exactly when it matters. The load-bearing assertions are the ones
+about agreement between three things that can drift apart:
+
+- **One record per row on screen** (77 records for 77 rows), and the first
+  record is the first row — which is what makes the export *sorted* rather than
+  merely complete.
+- **The amounts total the server's own figure**, read from a `data-paise`
+  attribute rather than by parsing `₹2,11,000` back out of the DOM. A check that
+  re-derives the formatter under test is not a check.
+- **A filtered list exports only the filtered rows**, because the two moments a
+  treasurer exports are "everyone, in ring order" and "the nine people matching
+  this" — and a button that ignored the search box would produce the wrong file
+  in the second case.
+- **The file starts with `U+FEFF`**, asserted by code point, because the
+  failure mode is mojibake in Excel and nothing else.
+- **No record was split by a stray delimiter**, and **no email-shaped or bare
+  ten-digit value appears anywhere in the data** — the screen says *by SMS* and
+  the file must not quietly widen that into a phone number.
+
+One assertion here was itself wrong on the first run. "The export never carries a
+phone number or email" was written as `!hasAt || !hasOther`, which passes for
+almost any input, including a file full of phone numbers. It was rewritten to
+test the claim it was named after: no `@` and no bare ten-digit value anywhere in
+the data records, plus a separate check that the channel *is* named even though
+the destination is not. A disjunction of two negations is not an assertion, and
+this is the third time in this project one has turned up — the M4a sort check and
+the M5 reminder sort check were both green while testing nothing.
 
 ---
 
@@ -398,7 +437,7 @@ is `__convex` rather than `convex` because the repository has a real `convex/`
 directory that Vite serves as `/convex/_generated/api.js`; proxying that name
 hands the app's own modules to the backend and blanks the page.
 
-Both origins now pass all 248 checks.
+Both origins now pass all 263 checks.
 
 ### 4. A historical bank passbook showed the wrong year, and was slow
 
@@ -489,8 +528,7 @@ that cannot fail is not a test.
 
 `bun run visual:ui` (30 assertions) is a third, separate suite. The other two
 drive a desktop viewport, which is precisely why a console with **no navigation
-at all below the `lg` breakpoint** could pass 248 console assertions, 71 portal
-assertions, 37 smoke checks and 103 security checks. The sidebar is
+at all below the `lg` breakpoint**could pass 263 console assertions, 71 portal assertions, 37 smoke checks and 115 security checks. The sidebar is
 `hidden lg:flex`; the phone header carried the logo, the theme toggle and a
 sign-out button. A treasurer on a phone could open the app, see the dashboard,
 and reach none of the other twelve routes. Nothing failed, because the app was

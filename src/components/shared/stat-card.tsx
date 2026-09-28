@@ -8,12 +8,24 @@ export function StatCard({
   hint,
   icon: Icon,
   tone = "default",
+  testId,
+  paise,
 }: {
   label: string
   value: string
   hint?: string
   icon?: LucideIcon
   tone?: "default" | "positive" | "negative" | "warning"
+  testId?: string
+  /**
+   * The unformatted amount, for the verification suite.
+   *
+   * A formatted figure on its own cannot be checked against anything: parsing
+   * `₹1,23,456` back out of the DOM and hoping the grouping matches is the
+   * assertion re-deriving the formatter under test. The server's own number is
+   * published here so a check can compare against it directly.
+   */
+  paise?: number
 }) {
   const toneClass = {
     default: "text-foreground",
@@ -23,7 +35,7 @@ export function StatCard({
   }[tone]
 
   return (
-    <Card>
+    <Card data-testid={testId} data-paise={paise}>
       <CardContent className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">

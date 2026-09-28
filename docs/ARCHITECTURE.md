@@ -738,7 +738,7 @@ convex/
 src/
 ├── routes/                the console screens, the member portal, /auth
 ├── components/            shadcn + recovered design system
-└── lib/                   types, money, formatting, the Convex client
+└── lib/                   types, money, formatting, the Convex client, csv
 ```
 
 **`lib/ledger.ts` is the only module permitted to write a `ledger_entry`**, and
@@ -843,6 +843,38 @@ The asymmetry with M2's approval flow is intentional and worth stating: a
 treasurer **can** record a refusal made in person, because a member who asks to
 be left alone does not always have an account with us. Turning something off
 needs the person; turning it on does not.
+
+### The export is a format problem, and it fails on someone else's machine
+
+The defaulter list exports to CSV from the browser, from the read model already
+in memory — no second query, no new server surface, and the file cannot
+disagree with the screen because it *is* the screen's data. It follows the
+active search and the active sort, because the two moments a treasurer exports
+are "everyone, in ring order" and "the nine people matching this", and a button
+that ignored the search box would produce the wrong file in the second case.
+
+`src/lib/csv.ts` is hand-written for three reasons, each of which fails
+*quietly* — the file opens and says the wrong thing:
+
+1. **A name is not a column.** `Ali, Mohammad` is two columns and
+   `Sheikh "Bhai" Saheb` is unparseable, so fields are quoted per RFC 4180 with
+   internal quotes doubled.
+2. **A name can be a formula.** This is the one with teeth. A member called
+   `=HYPERLINK("http://phish.example","Verify your account")` is legal data, and
+   in Excel it is not text — it is a live link, on a page that has nothing to do
+   with this application. Text fields beginning `=`, `+`, `-`, `@` or a tab are
+   prefixed with an apostrophe. Numbers are exempt *by type*, so a new column
+   cannot forget the guard.
+3. **Excel guesses the encoding.** A UTF-8 file with no BOM is read as the local
+   codepage, so the BOM is written by `toCsv` — not by the downloader. The
+   failure it prevents is a second call site that builds a file by another route
+   and forgets it, so the correct-by-default place is the writer.
+
+Amounts go out as plain decimal rupees, not `₹1,23,456`. A formatted string is
+text to a spreadsheet and cannot be summed, and summing the column is the only
+reason anyone opens the file. The export also carries **no contact details**:
+the screen says *by SMS* and not *98765 43210*, and putting a phone number in a
+file on disk is a different privacy posture from the one the screen sets.
 
 ---
 

@@ -1071,5 +1071,162 @@ console.log("\nM5 — the reminder seam")
   )
 }
 
+console.log("\nCSV export — the bytes a spreadsheet will actually read")
+/*
+ * This section is not about the product, it is about a format, and the format
+ * fails on someone else's machine. Every one of these assertions is a way the
+ * file can open successfully and still be wrong:
+ *
+ *   - a name containing a comma silently becomes two columns, and the arrears
+ *     total no longer matches the column the treasurer is looking at;
+ *   - a name containing a quote makes the row unparseable past that point;
+ *   - a name beginning with `=` is not text in Excel, it is a *formula*, and
+ *     this is the one with teeth: the member list is user-supplied, so a name
+ *     of `=HYPERLINK("http://phish.example","Verify")` lands a clickable link
+ *     in a treasurer's spreadsheet. The guard is asserted directly rather than
+ *     inferred, because the failure is invisible until someone opens the file;
+ *   - without the BOM, Excel reads UTF-8 as the local codepage and a name comes
+ *     out mangled;
+ *   - amounts written as `₹1,23,456` are text to a spreadsheet and cannot be
+ *     summed, which is the only reason anyone opens the file.
+ *
+ * The module under test is the same file the app imports, not a copy.
+ */
+const { toCsv, parseCsv, neutraliseFormula, UTF8_BOM } = await import(
+  "../src/lib/csv.ts"
+)
+
+const hostile = [
+  {
+    name: 'Ali, Mohammad',
+    amountPaise: 125000,
+    months: 5,
+    daysPastDue: 210,
+    oldestMonth: "April 2024",
+    bucket: "d90plus",
+    kind: "arrears_summary",
+    reachEmail: true,
+    reachSms: false,
+    optedOut: false,
+    lastRemindedAt: 1750000000000,
+    lastReminderState: "sms · queued",
+  },
+  {
+    // A legal name, and a formula the moment it reaches Excel.
+    name: '=HYPERLINK("http://phish.example","Verify your account")',
+    amountPaise: 5000,
+    months: 1,
+    daysPastDue: 12,
+    oldestMonth: "September 2026",
+    bucket: "d30",
+    kind: "overdue",
+    reachEmail: false,
+    reachSms: true,
+    optedOut: false,
+    lastRemindedAt: null,
+    lastReminderState: null,
+  },
+  {
+    name: 'Sheikh "Bhai" Saheb',
+    amountPaise: 0,
+    months: 0,
+    daysPastDue: 0,
+    oldestMonth: null,
+    bucket: "current",
+    kind: "due_soon",
+    reachEmail: false,
+    reachSms: false,
+    optedOut: true,
+    lastRemindedAt: null,
+    lastReminderState: null,
+  },
+  {
+    name: "-1+1",
+    amountPaise: 100,
+    months: 1,
+    daysPastDue: 3,
+    oldestMonth: "September 2026",
+    bucket: "d30",
+    kind: "overdue",
+    reachEmail: true,
+    reachSms: true,
+    optedOut: false,
+    lastRemindedAt: null,
+    lastReminderState: null,
+  },
+]
+
+const HOSTILE_COLUMNS = [
+  { header: "Member", value: (r) => r.name },
+  { header: "Outstanding (INR)", value: (r) => r.amountPaise / 100 },
+  { header: "Months owed", value: (r) => r.months },
+  { header: "Days past due", value: (r) => r.daysPastDue },
+  { header: "Last chased", value: (r) => r.lastRemindedAt ?? "" },
+]
+
+const hostileCsv = toCsv(HOSTILE_COLUMNS, hostile)
+const parsed = parseCsv(hostileCsv)
+
+check(
+  "a comma in a name does not become a second column",
+  parsed.every((r) => r.length === HOSTILE_COLUMNS.length),
+  parsed.map((r) => r.length).join(", ") + " cells per row, expected " + HOSTILE_COLUMNS.length,
+)
+check(
+  "a quote in a name survives the round trip intact",
+  parsed[3]?.[0] === 'Sheikh "Bhai" Saheb',
+  JSON.stringify(parsed[3]?.[0]),
+)
+check(
+  "a name that would execute as a formula is neutralised",
+  /HYPERLINK/.test(hostileCsv) && !/^=/m.test(hostileCsv) && parsed[2]?.[0]?.startsWith("'="),
+  parsed[2]?.[0]?.slice(0, 40),
+)
+check(
+  "the guard covers every character that opens a formula, not just =",
+  ["=1", "+1", "-1", "@x", "\tx"].every((s) => neutraliseFormula(s).startsWith("'")),
+  ["=1", "+1", "-1", "@x", "\\tx"].map(neutraliseFormula).join(" "),
+)
+check(
+  "a name that is already text is left alone",
+  neutraliseFormula("Abdullah Khan") === "Abdullah Khan",
+  neutraliseFormula("Abdullah Khan"),
+)
+check(
+  "amounts are numbers a spreadsheet can sum, not formatted currency",
+  parsed[1]?.[1] === "1250" && Number(parsed[1][1]) === 1250,
+  `Outstanding (INR) wrote ${JSON.stringify(parsed[1]?.[1])}`,
+)
+check(
+  "the header record names the columns and the unit",
+  parsed[0]?.[0] === "Member" && parsed[0]?.[1] === "Outstanding (INR)",
+  parsed[0]?.join(", "),
+)
+check(
+  "the file carries a byte-order mark so Excel reads it as UTF-8",
+  hostileCsv.startsWith(UTF8_BOM) && parseCsv(hostileCsv).length === hostile.length + 1,
+  `starts with ${JSON.stringify(hostileCsv.slice(0, 1))}`,
+)
+check(
+  "and the BOM is written exactly once, not again by the downloader",
+  !hostileCsv.slice(UTF8_BOM.length).startsWith(UTF8_BOM),
+  "a second BOM renders as a stray character in the first header cell",
+)
+check(
+  "records are CRLF-separated, as RFC 4180 specifies",
+  hostileCsv.includes("\r\n") && !/[^\r]\n/.test(hostileCsv),
+  `${hostileCsv.split("\r\n").length - 1} record breaks`,
+)
+check(
+  "an empty list still opens to show which columns exist",
+  parseCsv(toCsv(HOSTILE_COLUMNS, [])).length === 1,
+  "a zero-row export should be a header, not a zero-byte file",
+)
+check(
+  "a missing value is an empty cell, not the word null",
+  parseCsv(toCsv(HOSTILE_COLUMNS, [hostile[2]]))[1]?.[4] === "",
+  JSON.stringify(parseCsv(toCsv(HOSTILE_COLUMNS, [hostile[2]]))[1]?.[4]),
+)
+
 console.log(`\n  ${pass} passed, ${fail} failed.\n`)
 process.exit(fail > 0 ? 1 : 0)
