@@ -484,6 +484,7 @@ needs a staging deployment, not a sandbox.
 - [x] Scheduled monthly run for the whole org
 - [x] One-tap "remind all unpaid" from the grid
 - [x] Defaulter list with aging, sortable
+- [x] Defaulter list export to CSV — follows the search and the sort
 - [x] Opt-out preferences and consent capture
 - [~] Delivery status and bounce handling — the log and the event shape exist
 - [x] Per-member reminder history
@@ -537,8 +538,10 @@ somebody else by passing a different id.
   `internalMutation`, callable only from a scheduler, so the monthly run cannot
   fire against the local backend. It is covered by the same blocker as the M4b
   gateway: a real Convex deployment.
-- **Export** of the defaulter list (CSV) is not built; the list is sortable and
-  the arrears read model behind it is already one query.
+- **Export** of the defaulter list is **built** (see below). What is not built is
+  a call list: the export names the channel a member can be reached on and
+  carries no phone number or email, which is a decision rather than an
+  omission.
 
 ---
 

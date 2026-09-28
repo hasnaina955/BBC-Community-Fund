@@ -69,7 +69,7 @@ destinations, and the two are gated separately on the server.
 | Member portal | **Done (M3)** — what I owe, a printable passbook, receipts, mark-as-paid, installable |
 | Collection desk | **Done (M4a)** — cash sessions, receipts, and the provider seam; online collection still deferred |
 | Reminders and arrears | **Built, unsent (M5)** — the defaulter list with ageing, the run that is recorded rather than looped, and the consent rules; the send is a seam with no vendor behind it |
-| Verified in a browser | **Done** — 248 console checks + 71 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
+| Verified in a browser | **Done** — 263 console checks + 71 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
 | Data | **Done (M1)** — seeded: 1 org, 7 staff, 3 banks, 6 funds, 84 members |
 | Online collection | **Blocked on the committee** — M4's provider half needs four answers before it can be built ([docs/M4-PLAN.md](docs/M4-PLAN.md)) |
 
@@ -80,7 +80,7 @@ bun install
 bun run dev        # Convex backend + Vite together, http://localhost:5173
 bun run typecheck  # tsc -b --noEmit, app + convex
 bun run build      # typecheck + production build into dist/
-bun run check      # 103 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions
+bun run check      # 115 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions, the CSV export
 bun run smoke      # all 37 read models return against the seeded data
 bun run measure    # payload per screen, against history
 bun run visual     # every console screen in a real browser, against real data

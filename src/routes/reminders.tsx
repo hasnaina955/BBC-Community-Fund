@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CircleAlert,
   Clock,
+  Download,
   History,
   Mail,
   MessageSquare,
@@ -45,6 +46,7 @@ import { StatCard, EmptyState } from "@/components/shared/stat-card"
 import { PageHeader } from "@/components/shared/page-header"
 import { ReadModelLoader } from "@/components/shared/read-model"
 import { formatPaise, formatDateTime } from "@/lib/format"
+import { toCsv, downloadCsv, type CsvColumn } from "@/lib/csv"
 
 /**
  * Reminders and arrears.
@@ -101,6 +103,88 @@ const STATUS_TONE: Record<string, string> = {
 
 type SortKey = "oldest" | "newest" | "amount" | "name"
 
+/** One row of `reminders:defaulters`, as the browser receives it. */
+type DefaulterRow = {
+  memberId: string
+  name: string
+  amountPaise: number
+  months: number
+  daysPastDue: number
+  oldestMonth: string | null
+  bucket: string
+  kind: string
+  reachEmail: boolean
+  reachSms: boolean
+  optedOut: boolean
+  lastRemindedAt: number | null
+  lastReminderState: string | null
+}
+
+/**
+ * The exported columns, and why each one is the shape it is.
+ *
+ * The rules that decided this list:
+ *
+ * - **Amounts are rupees, as a number.** `formatPaise` gives `₹1,23,456`, which
+ *   a spreadsheet reads as text and cannot sum. The only reason to open this
+ *   file is to total a column, so the column has to total. The unit is in the
+ *   header.
+ * - **Ages are days, not the bucket label.** A treasurer sorting by "how bad is
+ *   this" wants the raw number to sort on; the bucket is the reading aid and it
+ *   is a derived, lossy version of the same fact.
+ * - **The channel is spelled out, not a boolean.** "By SMS" answers a question a
+ *   boolean cannot — the treasurer is deciding how to make contact, and the
+ *   difference between WhatsApp and a bounced number is the whole job.
+ * - **No contact details.** See the note in `lib/csv.ts`. The export carries the
+ *   same information as the screen, and not one field more.
+ */
+const EXPORT_COLUMNS: CsvColumn<DefaulterRow>[] = [
+  { header: "Member", value: (r) => r.name },
+  { header: "Outstanding (INR)", value: (r) => r.amountPaise / 100 },
+  { header: "Months owed", value: (r) => r.months },
+  { header: "Days past due", value: (r) => r.daysPastDue },
+  { header: "Oldest unpaid month", value: (r) => r.oldestMonth ?? "" },
+  { header: "Ageing", value: (r) => BUCKET_LABEL[r.bucket] ?? r.bucket },
+  { header: "Would send", value: (r) => wouldSendLabel(r) },
+  { header: "Reachable by", value: (r) => reachLabel(r) },
+  { header: "Opted out", value: (r) => r.optedOut },
+  { header: "Last chased", value: (r) => r.lastRemindedAt ?? "" },
+  { header: "Last chase status", value: (r) => r.lastReminderState ?? "" },
+]
+
+/** The same wording the table uses, so the file cannot describe a row differently. */
+const BUCKET_LABEL: Record<string, string> = {
+  current: "Not yet due",
+  d30: "1-30 days",
+  d60: "31-60 days",
+  d90: "61-90 days",
+  d90plus: "Over 90 days",
+}
+
+function wouldSendLabel(row: DefaulterRow): string {
+  if (row.optedOut) return "no - asked not to be"
+  if (!row.reachEmail && !row.reachSms) return "no contact details"
+  return KIND_LABEL[row.kind] ?? row.kind
+}
+
+function reachLabel(row: DefaulterRow): string {
+  if (row.optedOut) return ""
+  const channels = [
+    row.reachEmail ? "email" : null,
+    row.reachSms ? "SMS" : null,
+  ].filter(Boolean)
+  return channels.length ? channels.join(" and ") : "none"
+}
+
+/** `arrears-2026-09-28.csv` — dated, so two exports in a month are not `arrears (1)`. */
+function exportFilename(orgName: string, asOf: string): string {
+  const slug = orgName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+  return `${slug || "arrears"}-arrears-${asOf.slice(0, 10)}.csv`
+}
+
 export default function Reminders() {
   const [sort, setSort] = useState<SortKey>("oldest")
   const [search, setSearch] = useState("")
@@ -125,6 +209,8 @@ export default function Reminders() {
   }
 
   const hasProvider = defaulters.providerConfigured
+  const orgName = defaulters.orgName
+  const asOf = defaulters.asOf
 
   async function confirmRun() {
     if (!confirming) return
@@ -138,6 +224,22 @@ export default function Reminders() {
               `${result.skipped} member${result.skipped === 1 ? "" : "s"} skipped.`,
       )
     }
+  }
+
+  /**
+   * Download what is on screen.
+   *
+   * `rows`, not `defaulters.rows` — the file follows the search and the sort,
+   * because the two moments a treasurer exports are "everyone, in ring order"
+   * and "the nine people on this fund", and a button that silently ignored the
+   * search box would produce the wrong file in the second case. The button says
+   * which it is about to do.
+   */
+  function exportCsv() {
+    const csv = toCsv(EXPORT_COLUMNS, rows)
+    const filename = exportFilename(orgName, asOf)
+    downloadCsv(filename, csv)
+    setOutcome(`Exported ${rows.length} member${rows.length === 1 ? "" : "s"} to ${filename}.`)
   }
 
   return (
@@ -193,6 +295,8 @@ export default function Reminders() {
           hint={`across ${defaulters.totalMembers} member${defaulters.totalMembers === 1 ? "" : "s"}`}
           icon={CircleAlert}
           tone={defaulters.totalPaise > 0 ? "negative" : "positive"}
+          testId="outstanding-total"
+          paise={defaulters.totalPaise}
         />
         <StatCard
           label="Would be chased"
@@ -264,6 +368,27 @@ export default function Reminders() {
                 className="h-9 w-48"
                 aria-label="Search members by name"
               />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                data-testid="export-defaulter-csv"
+                title={
+                  search.trim()
+                    ? `Download the ${rows.length} members matching "${search.trim()}"`
+                    : `Download all ${rows.length} members on this list`
+                }
+              >
+                <Download className="size-4" />
+                Export CSV
+                <span className="sr-only">
+                  {search.trim()
+                    ? ` of the ${rows.length} members matching ${search.trim()}`
+                    : ` of all ${rows.length} members on this list`}
+                </span>
+              </Button>
               <Select
                 value={sort}
                 onValueChange={(v) => setSort(v as SortKey)}
