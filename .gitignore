@@ -54,3 +54,4 @@ Thumbs.db
 
 # Visual verification artifacts (screenshots + report)
 .visual/
+.visual-recovery/

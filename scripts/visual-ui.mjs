@@ -121,7 +121,13 @@ async function signIn(page, email) {
   await page.waitForURL((u) => !u.pathname.startsWith("/auth"), { timeout: 25_000 })
 }
 
-const browser = await chromium.launch()
+// See the note in visual-check.mjs: a container's `/dev/shm` is 64 MB, Chromium
+// renderers get killed when a page needs more, and Playwright reports it as
+// `Target crashed` — which reads exactly like an application bug. This suite
+// drives a phone-sized page full of screenshots, so it is the one most exposed.
+const browser = await chromium.launch({
+  args: ["--disable-dev-shm-usage", "--no-sandbox"],
+})
 
 /* ------------------------------------------ the console on a phone */
 

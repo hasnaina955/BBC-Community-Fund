@@ -21,8 +21,8 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **V1** | Browser verification | M2c | **Done** | Every screen renders, and the numbers on it are the server's |
 | **M2d** | Reconciliation and close | M2a | **Done** | Balances reconcile with the bank |
 | **M3** | Member portal | M2 | **Done** | A member is self-sufficient |
-| **M4** | Online collection | M2, M3 | Not started | A member can pay from a link |
-| **M5** | Reminders and arrears | M4 | Not started | Unpaid contributions get chased |
+| **M4** | Online collection | M2, M3 | Half done — the offline half and the provider seam are built; the gateway half is blocked on the committee | A member can pay from a link |
+| **M5** | Reminders and arrears | M4a | Not started | Unpaid contributions get chased |
 | **M6** | Multi-tenancy | M2 | Not started | Two orgs, no data crossover |
 | **M7** | Reports and compliance | M2 | Not started | The committee gets its answer |
 | **M8** | Hardening and operations | M3–M7 | Not started | It can be relied on |
@@ -406,6 +406,28 @@ function the desk uses, which `check` already drives directly.
 
 ### Scope
 
+M4 splits in two. The provider-independent half is built; the half that needs a
+payment gateway and a merchant account is not, and cannot be until the committee
+answers the questions in [M4-PLAN.md](./M4-PLAN.md).
+
+**Built — the provider-independent half (M4a):**
+
+- [x] Offline collection fully first class: cash and cheque with receipt number,
+      collector, and reference
+- [x] **Every payment issues a receipt**
+- [x] A collection session — one date, one fund, one collector — with a running
+      total as receipts are issued
+- [x] The provider seam (`lib/payments.ts`): a `PaymentsProvider` interface with
+      a local implementation, so a gateway is added behind it rather than
+      threaded through the money path
+- [x] The tables a gateway needs already exist and are reset with the rest
+      (`gatewayIntents`, `gatewayEvents`, `settlements`), and `gateway.ts` is the
+      exceptions surface they will be read from — shipped **empty by design**
+- [x] Receipt numbers come from a real sequence (`lib/sequence.ts`), not a
+      table count
+
+**Not built — the provider half (M4b), blocked on the committee:**
+
 - [ ] Payment gateway integration: UPI and cards (provider decision deferred —
       see [M4-PLAN.md](./M4-PLAN.md))
 - [ ] Payment link or per-member checkout for a contribution
@@ -414,16 +436,40 @@ function the desk uses, which `check` already drives directly.
 - [ ] Webhook creates a `payment` and the matching ledger entry
 - [ ] Out-of-order and duplicate events handled; retry-safe
 - [ ] Failed and refunded payments recorded
-- [ ] Offline collection fully first class: cash and cheque with receipt number,
-      collector, and reference
-- [ ] **Every payment issues a receipt**
 
 ### Exit criteria
 
-- A member pays from a link; the contribution flips to paid and a ledger entry
-  appears
-- Replaying the same webhook does not double-count
-- A cash collection at a meeting with no signal is recorded and reconciled later
+Two of the three are met, and the one that is not is the one that needs a
+merchant account:
+
+- [x] A cash collection at a meeting with no signal is recorded and reconciled
+      later
+- [ ] A member pays from a link; the contribution flips to paid and a ledger
+      entry appears — **M4b, blocked**
+- [x] Replaying the same request does not double-count
+
+That last one is worth being precise about, because it turned out to be testable
+before there was a gateway. Idempotency was a property of `recordPaymentFor`
+(it keys on `idempotencyKey` through the `by_idempotency` index and returns the
+payment it already wrote), and a webhook is only a caller of it. A replay test
+now runs in `bun run check`, so the guarantee is banked ahead of the caller that
+will actually need it.
+
+Building the desk first was not a detour. It is the same writer — the collection
+desk mints receipts in a burst, and doing that exposed a real defect: the old
+`count + 1` receipt number is not a sequence, so two payments in the same instant
+minted the same number, and the count itself was a full-table scan of ~9,955
+payments, past the server's per-query limit. Both are fixed in
+`lib/sequence.ts` and both are covered by regressions in `bun run check`. A
+gateway, which writes payments in even tighter bursts, would have hit both
+immediately.
+
+### One hard constraint, recorded so it is not rediscovered
+
+A Convex `httpAction` has no `ctx.db`. A webhook must therefore hand off to an
+internal mutation, and the local Convex backend **serves no HTTP routes at all** —
+so a webhook cannot be exercised locally, only against a real deployment. M4b
+needs a staging deployment, not a sandbox.
 
 ---
 

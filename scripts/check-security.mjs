@@ -681,5 +681,229 @@ if (open) {
   }
 }
 
+/* ------------------------------------------------- M4a: collection + gateway */
+
+console.log("\nM4a — collection sessions and the payments seam")
+
+// The collection desk is a treasurer's tool. Every one of these must be refused
+// to a role that does not hold it, because the whole point of the `member` role
+// from M3 is that a member is never shown a screen full of figures about other
+// people — and a collection session is exactly that.
+{
+  const viewer = await signIn("farhan@jamaat.org")
+  const roundsRead = await call("collections:rounds", {}, viewer)
+  check(
+    "a viewer may read collection sessions",
+    roundsRead.status === "success" && Array.isArray(roundsRead.value?.rounds),
+    roundsRead.errorMessage ?? `${roundsRead.value?.rounds?.length} sessions`,
+  )
+
+  const memberRead = await call("collections:rounds", {}, member)
+  check(
+    "a member cannot read collection sessions",
+    memberRead.status === "error" && /access required/i.test(memberRead.errorMessage ?? ""),
+    memberRead.errorMessage,
+  )
+
+  const memberMembers = await call("collections:roundMembers", {}, member)
+  check(
+    "a member cannot list the roll through the collection desk",
+    memberMembers.status === "error" && /access required/i.test(memberMembers.errorMessage ?? ""),
+    memberMembers.errorMessage,
+  )
+
+  // The mutation under test needs a real session to point at, so take one from a
+  // round that already exists rather than creating state that outlives the run.
+  const allRounds = await call("collections:rounds", {}, admin)
+  const anyRound = allRounds.value?.rounds?.[0]
+  if (anyRound) {
+    const viewerWrite = await call(
+      "collections:recordRoundPayment",
+      { roundId: anyRound.id, amountPaise: 100, method: "cash" },
+      viewer,
+      "mutation",
+    )
+    check(
+      "a viewer cannot record money into a session",
+      viewerWrite.status === "error" && /treasurer access required/i.test(viewerWrite.errorMessage ?? ""),
+      viewerWrite.errorMessage,
+    )
+
+    const memberWrite = await call(
+      "collections:recordRoundPayment",
+      { roundId: anyRound.id, amountPaise: 100, method: "cash" },
+      member,
+      "mutation",
+    )
+    check(
+      "a member cannot record money into a session",
+      memberWrite.status === "error" && /treasurer access required/i.test(memberWrite.errorMessage ?? ""),
+      memberWrite.errorMessage,
+    )
+  }
+
+  // A round is for a fund with no schedule. On a `fixed_monthly` fund it would
+  // invite counting the same money twice against the grid, so the server refuses
+  // it even for a treasurer.
+  const allFunds = (await call("aggregate:funds", {}, admin)).value ?? []
+  const monthly = allFunds.find((f) => f.collectionMode === "fixed_monthly")
+  if (monthly) {
+    const bad = await call(
+      "collections:createRound",
+      { fundId: monthly.id, date: "2026-01-05", label: "should be refused" },
+      admin,
+      "mutation",
+    )
+    check(
+      "a round cannot be opened on a fund that is collected on a schedule",
+      bad.status === "error" && /voluntary and donation funds only/i.test(bad.errorMessage ?? ""),
+      bad.errorMessage,
+    )
+  } else {
+    check("a monthly fund was found to test the round rule", false, "no fixed_monthly fund seeded")
+  }
+}
+
+console.log("\nM4a — the payments seam")
+
+{
+  // `gateway:config` is what the console reads to decide whether to offer online
+  // collection. It must be readable by a treasurer and refused to a member, and
+  // it must report "not configured" rather than throwing — that state is the
+  // shipping state, not a failure.
+  const treasurer = await signIn("treasurer@jamaat.org")
+  const cfg = await call("gateway:config", {}, treasurer)
+  check(
+    "a treasurer can ask whether online collection is available",
+    cfg.status === "success" && cfg.value?.configured === false && cfg.value?.canCollectOnline === false,
+    JSON.stringify(cfg.value ?? cfg.errorMessage),
+  )
+
+  const memberCfg = await call("gateway:config", {}, member)
+  check(
+    "a member cannot read the gateway configuration",
+    memberCfg.status === "error" && /treasurer access required/i.test(memberCfg.errorMessage ?? ""),
+    memberCfg.errorMessage,
+  )
+
+  const memberExceptions = await call("gateway:exceptions", {}, member)
+  check(
+    "a member cannot read the exceptions list",
+    memberExceptions.status === "error" && /access required/i.test(memberExceptions.errorMessage ?? ""),
+    memberExceptions.errorMessage,
+  )
+
+  const exc = await call("gateway:exceptions", {}, treasurer)
+  check(
+    "the exceptions list is readable and empty while no provider is configured",
+    exc.status === "success" &&
+      exc.value?.configured === false &&
+      Array.isArray(exc.value?.exceptions) &&
+      exc.value.exceptions.length === 0,
+    JSON.stringify(exc.value ?? exc.errorMessage),
+  )
+}
+
+console.log("\nM4a — receipt numbers are a sequence, not a count")
+
+/*
+ * `recordPaymentFor` used to derive a receipt number from `payments.length + 1`.
+ * Two faults, and the second is the one that matters:
+ *
+ *   1. It read every payment in the organisation, on the hottest write in the
+ *      app. The seed is at ~10,000 rows against a 16,384-document cap.
+ *   2. A count is not a sequence. Two payments recorded before either committed
+ *      both computed `n + 1` and both wrote `R-00n`. Convex serialises
+ *      mutations per document, not across documents, so nothing stopped it —
+ *      and a collection round is the burst that widens the window most.
+ *
+ * Recording two payments back to back and asserting the numbers differ is the
+ * cheapest test that catches a regression to the old derivation, because the
+ * second call would read the first one's row and land on the same number.
+ */
+{
+  const list = (await call("aggregate:funds", {}, admin)).value ?? []
+  const cashFund =
+    list.find((f) => f.collectionMode === "voluntary" || f.collectionMode === "donation") ??
+    list[0]
+  const memberRows = (await call("aggregate:members", { filter: "active" }, admin)).value ?? []
+  const who = memberRows[0]
+
+  if (cashFund && who) {
+    const first = await call(
+      "transactions:recordPayment",
+      { fundId: cashFund.id, memberId: who.id, amountPaise: 100, method: "cash", reference: "check:seq-a" },
+      admin,
+      "mutation",
+    )
+    const second = await call(
+      "transactions:recordPayment",
+      { fundId: cashFund.id, memberId: who.id, amountPaise: 100, method: "cash", reference: "check:seq-b" },
+      admin,
+      "mutation",
+    )
+
+    check(
+      "two payments recorded in a row get different receipt numbers",
+      first.status === "success" &&
+        second.status === "success" &&
+        first.value?.receiptNo !== second.value?.receiptNo,
+      `${first.value?.receiptNo} then ${second.value?.receiptNo}`,
+    )
+
+    check(
+      "receipt numbers keep the five-digit shape the seed established",
+      /^R-\d{5,}$/.test(first.value?.receiptNo ?? ""),
+      first.value?.receiptNo ?? first.errorMessage,
+    )
+
+    // The replay guard is about the *same* key arriving twice. The two calls
+    // above carry no key at all, so a third call keyed differently is correctly
+    // a third payment — that is not a replay, and asserting otherwise would be
+    // asserting that the guard ignores keys.
+    const KEY = "check:replay-key-m4a"
+    const replayA = await call(
+      "transactions:recordPayment",
+      {
+        fundId: cashFund.id,
+        memberId: who.id,
+        amountPaise: 100,
+        method: "cash",
+        reference: "check:replay",
+        idempotencyKey: KEY,
+      },
+      admin,
+      "mutation",
+    )
+    const replayB = await call(
+      "transactions:recordPayment",
+      {
+        fundId: cashFund.id,
+        memberId: who.id,
+        amountPaise: 100,
+        method: "cash",
+        reference: "check:replay",
+        idempotencyKey: KEY,
+      },
+      admin,
+      "mutation",
+    )
+    check(
+      "the same idempotency key twice returns the first payment, not a second one",
+      replayA.status === "success" &&
+        replayB.status === "success" &&
+        replayA.value?.receiptNo === replayB.value?.receiptNo,
+      `${replayA.value?.receiptNo} then ${replayB.value?.receiptNo}`,
+    )
+    check(
+      "a replay does not burn a receipt number either",
+      replayB.value?.receiptNo === replayA.value?.receiptNo,
+      `${replayA.value?.receiptNo} vs ${replayB.value?.receiptNo}`,
+    )
+  } else {
+    check("a cash fund and a member were found to test the sequence", false, "could not find fixtures")
+  }
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed.\n`)
 process.exit(fail > 0 ? 1 : 0)

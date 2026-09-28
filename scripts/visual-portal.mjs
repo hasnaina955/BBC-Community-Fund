@@ -130,7 +130,13 @@ const IGNORED_CONSOLE = [
 /* ------------------------------------------------------------------- setup */
 
 await mkdir(OUT, { recursive: true })
-const browser = await chromium.launch()
+// See the note in visual-check.mjs: a container's `/dev/shm` is 64 MB, Chromium
+// renderers get killed when a page needs more, and Playwright reports it as
+// `Target crashed` — which reads exactly like an application bug. Same launch
+// arguments in all three suites so they cannot disagree.
+const browser = await chromium.launch({
+  args: ["--disable-dev-shm-usage", "--no-sandbox"],
+})
 
 const noise = { pageerror: [], console: [], failed: [], http: [] }
 let currentScreen = "boot"

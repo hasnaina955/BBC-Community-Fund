@@ -6,6 +6,7 @@ import { api } from "../../../convex/_generated/api"
 import {
   Banknote,
   Building2,
+  CalendarDays,
   CheckCircle2,
   HandCoins,
   LayoutDashboard,
@@ -45,6 +46,7 @@ const NAV = [
   { to: "/funds", label: "Funds", icon: PieChart },
   { to: "/members", label: "Members", icon: Users },
   { to: "/contributions", label: "Contributions", icon: Banknote },
+  { to: "/collection", label: "Collection", icon: CalendarDays },
   { to: "/transactions", label: "Transactions", icon: Wallet },
   { to: "/approvals", label: "Approvals", icon: ListChecks, badge: "pending" },
   { to: "/payment-requests", label: "Claimed payments", icon: HandCoins, badge: "requests" },
