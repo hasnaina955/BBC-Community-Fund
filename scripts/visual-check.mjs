@@ -31,6 +31,7 @@
 import { chromium } from "playwright"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { execSync } from "node:child_process"
 
 const BASE = process.env.PREVIEW_URL ?? "http://127.0.0.1:5173"
 const CONVEX = process.env.CONVEX_URL ?? "http://127.0.0.1:3210"
@@ -51,15 +52,119 @@ const results = []
 const screens = []
 let currentGroup = "general"
 
+/**
+ * Groups run, in groups, on a recycled browser.
+ *
+ * Measured over a twelve-route walk in this sandbox, one Chromium climbs from
+ * 472 MB resident after sign-in to 790 MB by the twelfth screen, and never
+ * gives any of it back. A full-page screenshot adds a spike on top. The Convex
+ * backend behind the app is itself at ~871 MB against the same 2 GB cgroup, so
+ * by the last third of the suite the two together do not fit, and the kernel
+ * takes the renderer. The suite recovers from that, but only after losing the
+ * group it was in — and if the backend is killed instead, nothing recovers.
+ *
+ * So the browser is closed and relaunched on a schedule rather than on failure.
+ * Three groups is measured, not guessed: that keeps resident memory in the
+ * 470-650 MB band instead of letting it walk to 790, which is what fits.
+ *
+ * This is the same `rebuild()` the crash path uses, told it is planned. A
+ * planned recycle is not a recovery: it does not count, and it does not mark
+ * the checks after it suspect, because a fresh browser is exactly as valid a
+ * starting point as the one it replaces.
+ */
+const RECYCLE_EVERY = 4
+let groupsSinceRecycle = 0
+
+/**
+ * Resident memory of the browser's whole process tree, in MB.
+ *
+ * Read from `ps` rather than guessed at. The cgroup is 2 GB and the Convex
+ * backend behind the app is already ~871 MB of it, so there is roughly 670 MB
+ * to give the browser, and a browser that has been through a dozen screens is
+ * using most of that.
+ */
+function browserRssMb() {
+  try {
+    const out = execSync(
+      `ps -eo rss,args | grep -E "chrome|headless_shell" | grep -v grep || true`,
+      { encoding: "utf8" },
+    )
+    let kb = 0
+    for (const line of out.split("\n")) {
+      const n = Number(line.trim().split(/\s+/)[0])
+      if (Number.isFinite(n)) kb += n
+    }
+    return kb / 1024
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Recycle above this many MB, or after `RECYCLE_EVERY` groups regardless.
+ *
+ * The measurement is the trigger and the group count is only a backstop, so a
+ * future screen that is unexpectedly heavy is caught by the number rather than
+ * by the order the groups happen to run in. Measured progression across the
+ * suite's own routes: 472 MB after sign-in, 562 by the contributions grid, 682
+ * by reconciliation.
+ *
+ * 500, not 560. The budget is tighter than it looks: the Convex backend behind
+ * the app is ~871 MB before it does any work and grows during the run, and with
+ * Vite, the Convex CLI, esbuild and the IDE server in the same 2 GB cgroup that
+ * leaves only a few hundred MB for the browser. The kernel's own counters
+ * recorded `oom_kill 1` at a peak of 2147487744 — the full limit — and the
+ * process it took was the backend, which is the one thing the suite cannot
+ * recover from. A fresh browser is 472 MB, so 500 allows roughly one screen's
+ * growth before recycling: frequent, a few seconds each, and it keeps the
+ * browser near its floor so the backend has room to grow into.
+ */
+const RECYCLE_ABOVE_MB = 500
+
+/**
+ * Set by `group()` when a recycle is due, and collected by the next page call.
+ *
+ * `group()` cannot await the recycle: it runs at the top level of the script, and
+ * making it async would turn all fifteen call sites into `await`s for no benefit.
+ * Nor can it *start* the rebuild and park the promise — the first version did
+ * exactly that, and it raced: `rebuild` is itself a long sequence of guarded
+ * page calls, so the group's opening navigation was issued while the browser it
+ * addressed was being closed. The symptom was `Target page, context or browser
+ * has been closed` on the first call of the very group that had asked for the
+ * recycle, which is indistinguishable from a product fault.
+ *
+ * So the flag is only a *decision*, and `guard` — the one place every browser
+ * call already passes through — performs it, awaits the rebuild, and issues the
+ * call against the rebuilt page. By the time the flag is consumed the rebuild is
+ * not running, so the rebuild's own calls never see it and never defer.
+ */
+let recycleWanted = false
+
 function group(name) {
   currentGroup = name
+  groupsSinceRecycle += 1
+  const heavy = browserRssMb() > RECYCLE_ABOVE_MB
+  if (!crashed && !dead && (heavy || groupsSinceRecycle >= RECYCLE_EVERY)) {
+    groupsSinceRecycle = 0
+    recycleWanted = true
+  }
   console.log(`\n\x1b[1m${name}\x1b[0m`)
 }
 
 function check(name, ok, detail = "") {
-  const entry = { group: currentGroup, name, ok: Boolean(ok), detail: String(detail) }
+  // `suspectFrom` is the index of the first check recorded after a recovery, or
+  // Infinity when the run was clean. A failure at or past it ran on a page that
+  // was rebuilt mid-suite, so it is kept but marked rather than counted.
+  const suspect = !suspectFrom || results.length >= suspectFrom
+  const entry = {
+    group: currentGroup,
+    name,
+    ok: Boolean(ok),
+    detail: String(detail),
+    ...(suspect && !ok ? { suspect: true } : {}),
+  }
   results.push(entry)
-  const mark = entry.ok ? "\x1b[32m  ok  \x1b[0m" : "\x1b[31m FAIL \x1b[0m"
+  const mark = !entry.ok && suspect ? "\x1b[33m FAIL?\x1b[0m" : entry.ok ? "\x1b[32m  ok  \x1b[0m" : "\x1b[31m FAIL \x1b[0m"
   console.log(`${mark} ${name}${entry.detail ? ` — ${entry.detail}` : ""}`)
   return entry.ok
 }
@@ -156,40 +261,482 @@ const IGNORED_CONSOLE = [
   "React Router Future Flag Warning",
 ]
 
-const browser = await chromium.launch()
+/*
+ * Launch arguments, and why they are not optional.
+ *
+ * `/dev/shm` in a container is typically 64 MB, and Chromium uses it for the
+ * shared memory its renderers pass frames through. When a page needs more than
+ * that — a tall list with a modal open, which is exactly the members passbook —
+ * the renderer is killed and Playwright reports `Target crashed`.
+ *
+ * That is the first thing to try and it is the documented configuration for
+ * Chromium in CI, so it stays. It is worth being clear that it was *not* the
+ * whole answer here, because the first diagnosis was wrong: with
+ * `--disable-dev-shm-usage` already set, `/dev/shm` sat at 0% used and the
+ * crashes kept coming. The real constraint is the cgroup memory limit, 2 GB in
+ * this sandbox, shared with Vite and the Convex backend, against a measured
+ * 999 MB peak for a single browser. The recovery in `revive()` is what handles
+ * that half, and the numbers are recorded there.
+ *
+ * `--no-sandbox` is needed because these run as root in a container, which
+ * Chromium refuses to do otherwise.
+ */
+const CHROMIUM_ARGS = [
+  "--disable-dev-shm-usage",
+  "--no-sandbox",
+  // Caps the V8 heap in every renderer. Measured on the heaviest screens in
+  // this suite, a full-page screenshot pass peaks at 749 MB of browser RSS
+  // without it and 694 MB with it. Modest, and deliberately not lower: this is
+  // a real app with a year-wide grid, and starving the heap buys ~70 MB at the
+  // price of a renderer that dies of a JS heap error instead. The schedule
+  // below is what actually keeps the footprint bounded; this lowers the floor.
+  "--js-flags=--max-old-space-size=192",
+]
+
 await mkdir(OUT, { recursive: true })
 
 let currentLabel = "boot"
 const noise = { console: [], pageerror: [], failed: [], http: [] }
+let crashed = false
+let lastUrl = "/"
 
-const context = await browser.newContext({
-  viewport: { width: 1440, height: 900 },
-  deviceScaleFactor: 1,
-})
-await context.addInitScript(RECORD_QUERIES)
-const page = await context.newPage()
+/**
+ * Build a browser, context and page, and wire up every listener.
+ *
+ * A function rather than a top-level sequence, because on a loaded machine the
+ * failure is not always a dead *renderer* — sometimes the whole browser goes, and
+ * a page reload against a closed browser throws `Target page, context or
+ * browser has been closed`. Rebuilding the session is the only recovery, and it
+ * can only be written once.
+ *
+ * The session cookie lives in the context, so a rebuilt context is signed out.
+ * `revive()` therefore signs in again before returning, which is why sign-in is
+ * factored out rather than done inline below.
+ */
+let sessionId = 0
 
-page.on("console", (m) => {
-  if (m.type() !== "error" && m.type() !== "warning") return
-  const text = m.text()
-  if (IGNORED_CONSOLE.some((i) => text.includes(i))) return
-  noise.console.push({ screen: currentLabel, text: text.slice(0, 400) })
-})
-page.on("pageerror", (e) => {
-  noise.pageerror.push({ screen: currentLabel, text: String(e).slice(0, 400) })
-})
-page.on("requestfailed", (r) => {
-  noise.failed.push({ screen: currentLabel, url: r.url(), why: r.failure()?.errorText })
-})
-page.on("response", (r) => {
-  if (r.status() >= 400) {
-    noise.http.push({ screen: currentLabel, status: r.status(), url: r.url() })
+async function openSession() {
+  sessionId += 1
+  const mine = sessionId
+  const browser = await chromium.launch({ args: CHROMIUM_ARGS })
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    deviceScaleFactor: 1,
+  })
+  await context.addInitScript(RECORD_QUERIES)
+  const p = await context.newPage()
+
+  p.on("console", (m) => {
+    if (m.type() !== "error" && m.type() !== "warning") return
+    const text = m.text()
+    if (IGNORED_CONSOLE.some((i) => text.includes(i))) return
+    noise.console.push({ screen: currentLabel, text: text.slice(0, 400) })
+  })
+  p.on("pageerror", (e) => {
+    noise.pageerror.push({ screen: currentLabel, text: String(e).slice(0, 400) })
+  })
+  p.on("requestfailed", (r) => {
+    noise.failed.push({ screen: currentLabel, url: r.url(), why: r.failure()?.errorText })
+  })
+  p.on("response", (r) => {
+    if (r.status() >= 400) {
+      noise.http.push({ screen: currentLabel, status: r.status(), url: r.url() })
+    }
+  })
+  p.on("crash", () => {
+    if (mine !== sessionId) return
+    crashed = true
+  })
+  p.on("close", () => {
+    // Only a close we did *not* ask for counts. `revive()` closes the browser
+    // deliberately, and that emits `close` on the old page — which, without the
+    // session check, lands after the new session is installed and marks it dead
+    // immediately. The symptom is a recovery loop: rebuild, "browser went away",
+    // rebuild, three times, then the suite throws. It only appears when a
+    // recovery is actually needed, which is why it was invisible until
+    // `scripts/prove-recovery.mjs` caused one on purpose.
+    if (mine !== sessionId) return
+    dead = true
+  })
+
+  return { browser, context, raw: p }
+}
+
+/**
+ * Playwright's wording for the ways a page goes away mid-suite.
+ *
+ * The set is not the one you would guess. `Target crashed` is what a *screenshot*
+ * failure reports; a `goto` that hits a killed renderer reports `Page crashed`,
+ * and neither string appears in the other. Matching on only the first one looks
+ * like it works — the screenshot path does get recovered — and then a crash on a
+ * navigation rethrows straight through the guard and unwinds the suite, which is
+ * the exact outcome this whole mechanism exists to prevent.
+ *
+ * Found by killing the renderers mid-run on purpose, rather than waiting for the
+ * sandbox to do it: `scripts/prove-recovery.mjs` does that, and it fails against
+ * any shorter list.
+ *
+ * The `net::ERR_*` half was found the same way and is the subtler one. Which
+ * string Playwright reports for a killed renderer is a race: a `goto` that lands
+ * after the kill says `Page crashed`, and one already in flight when the kill
+ * lands reports Chromium's own network error instead — `net::ERR_ABORTED` most
+ * of the time, and `net::ERR_CONNECTION_CLOSED` or `net::ERR_EMPTY_RESPONSE`
+ * when the socket went with it. Both halves are the same event. Without them the
+ * crash-between-groups scenario unwound the whole run on the navigation that
+ * followed the kill, which is the one thing the guard exists to prevent.
+ *
+ * Recovering on `net::ERR_CONNECTION_REFUSED` is a judgement call, and the safe
+ * way round: refused means the dev server, not the product, is unreachable, so
+ * there is nothing in it to be wrong about. A real outage costs the retries and
+ * then surfaces the original error, because `retryThrough` lets the last attempt
+ * through.
+ */
+const GONE_STRINGS = [
+  "Target crashed",
+  "Page crashed",
+  "Target closed",
+  "has been closed",
+  "net::ERR_ABORTED",
+  "net::ERR_CONNECTION_CLOSED",
+  "net::ERR_EMPTY_RESPONSE",
+  "net::ERR_CONNECTION_REFUSED",
+]
+
+function isGone(err) {
+  const text = String(err)
+  return GONE_STRINGS.some((s) => text.includes(s))
+}
+
+let dead = false
+let { browser, context, raw: rawPage } = await openSession()
+
+/**
+ * The page every assertion uses: a proxy that rebuilds the browser and re-issues
+ * the call when the renderer — or the whole browser — has gone.
+ *
+ * This is the single choke point, and it is deliberately not spread across the
+ * helpers. Wrapping `bodyText`, `shot`, `resetMods` and `innerText` one at a
+ * time was tried, and each time the suite got a little further before dying on
+ * the next unwrapped call: `keyboard.press` was the one that finished it off.
+ * A container can kill the browser at any point in an 80-call sequence, so the
+ * guard belongs where *every* call passes through.
+ *
+ * The subtle part, and the one that took three attempts to get right: a retry
+ * has to re-issue the call against the *new* page. Holding on to the object the
+ * call was first made against — which is what a plain wrapper does — means the
+ * retry re-issues it on the dead page and fails identically, forever. So every
+ * guarded method carries a `rebuild` closure that re-derives its receiver from
+ * whatever page is current, and the retry goes through that. For
+ * `page.locator(sel).first()` the chain is re-walked from the root, not
+ * resurrected from the dead handle.
+ */
+const page = new Proxy(
+  {},
+  {
+    get(_target, prop) {
+      const value = rawPage[prop]
+      if (typeof value === "function") return guard(() => rawPage, prop)
+      // `page.keyboard`, `page.mouse`, `page.touchscreen` are objects, not
+      // methods, and `page.locator(...)` returns a Locator whose own methods are
+      // where a crash surfaces. Both are wrapped, or the guard is one level too
+      // shallow — which is exactly how `keyboard.press` killed a run after the
+      // page methods had all been covered.
+      //
+      // The rebuild thunk is `rawPage[prop]`, *not* `rawPage`. `guardObject`'s
+      // contract is that its thunk returns the live equivalent of the object it
+      // wraps, so handing it the page makes every method of the wrapped object
+      // be looked up on the page instead: `page.keyboard.press("Escape")`
+      // became `rawPage.press("Escape")`, and Playwright rejected the missing
+      // key. The wrapper had to be right about *which* object it was rebuilding.
+      if (value && typeof value === "object") return guardObject(value, () => rawPage[prop])
+      return value
+    },
+  },
+)
+
+/**
+ * Wrap a method so it survives a crash.
+ *
+ * `owner` is a *thunk* returning the live receiver, not the receiver itself, so
+ * a retry after `revive()` reaches the rebuilt page.
+ *
+ * Deliberately *not* an `async` function. `page.url()` is synchronous, and making
+ * every method return a promise turned `new URL(page.url())` into
+ * `new URL(Promise)`. A synchronous result is returned synchronously; only a
+ * thenable is awaited.
+ */
+function guard(ownerThunk, prop) {
+  return (...args) => {
+    const call = () => ownerThunk()[prop](...args)
+    const issue = () => {
+      let out
+      try {
+        out = call()
+      } catch (err) {
+        if (!isGone(err)) throw err
+        return retryThrough(call)
+      }
+      if (out && typeof out.then === "function") {
+        return out.catch((err) => {
+          if (!isGone(err)) throw err
+          return retryThrough(call)
+        })
+      }
+      return wrapResult(out, call)
+    }
+
+    // A recycle that `group()` asked for. Performed here rather than in `group()`
+    // so it is finished *before* anything is issued, and so the call lands on the
+    // rebuilt page — retrying against the page just closed is the same bug as
+    // retrying against a dead one.
+    if (recycleWanted) {
+      recycleWanted = false
+      return rebuild({ planned: true })
+        .catch((err) => {
+          // Not swallowed silently: a failed rebuild is a real fault, and
+          // reporting it here beats reporting its symptom at the next call.
+          console.error(`\n  \x1b[31m… the scheduled recycle failed: ${err}\x1b[0m`)
+        })
+        .then(issue)
+    }
+    return issue()
   }
-})
+}
+
+/**
+ * Wrap a returned handle, keeping the means to rebuild it.
+ *
+ * `rebuild` returns the equivalent handle on the current page: for a Locator that
+ * is the same call chain replayed against `rawPage`, so `.first().click()` can be
+ * retried after the browser is replaced.
+ */
+function guardObject(obj, rebuild) {
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        // A genuine thenable must keep its `then`, or awaiting the wrapper would
+        // hand back the wrapper instead of the value.
+        if (prop === "then" && typeof obj.then === "function") return obj.then.bind(obj)
+        const live = () => rebuild()[prop]
+        let value
+        try {
+          value = obj[prop]
+        } catch (err) {
+          if (!isGone(err)) throw err
+          return retryThrough(() => live())
+        }
+        if (typeof value === "function") return guard(rebuild, prop)
+        if (value && typeof value === "object") return guardObject(value, live)
+        return value
+      },
+    },
+  )
+}
+
+function wrapResult(out, rebuild) {
+  if (out && typeof out === "object" && !(out instanceof Promise)) {
+    const fns = Object.keys(out).some(
+      (k) => typeof out[k] === "function" || typeof out[k] === "object",
+    )
+    if (fns) return guardObject(out, rebuild)
+  }
+  return out
+}
+
+/**
+ * Retry a call until it succeeds, reviving the browser in between.
+ *
+ * An earlier version gave up after one retry and returned `undefined`, on the
+ * reasoning that the caller's own assertion would report the failure. That was
+ * wrong: a guard that swallows a failure *and* hands back a value of the wrong
+ * type turns one environmental problem into a `TypeError` that unwinds the
+ * whole suite. `page.locator(...).count()` returning `undefined` produced
+ * exactly that — the row count compared false, and then the next assertion did
+ * `outstanding.length` on the same dead locator and killed the run at check 90
+ * of 229.
+ *
+ * So the contract is now simple and total: this either returns the call's real
+ * result, or throws. A caller never has to defend against a missing value.
+ *
+ * The cap exists so a browser that is gone for good fails loudly instead of
+ * spinning. At the last attempt the error is allowed through, which ends the
+ * run — correctly, because a suite that cannot get a browser back has no
+ * evidence to report.
+ */
+const MAX_REVIVES = 3
+
+/**
+ * Thrown when a group cannot be finished, so the run can stop with a report
+ * rather than a stack trace.
+ *
+ * A rebuild does not just cost the current call — it destroys the page the group
+ * was driving. `members` clicks "Passbook", reads the dialog, clicks the next
+ * member, reads that; after a rebuild there is no dialog open, so the next
+ * `waitForSelector('[role="alertdialog"]')` times out. A timeout is not a crash
+ * and must not be retried, but it is also not a defect, and letting it unwind is
+ * how a run ends in a `TimeoutError` stack instead of 200 checks' worth of
+ * evidence.
+ *
+ * So: the second consecutive failure inside a group that has already been
+ * rebuilt ends the run deliberately. The group is reported as abandoned, the
+ * report is still written, and the exit code is non-zero. Re-running without the
+ * crash finishes it.
+ */
+class SuiteAborted extends Error {
+  constructor(cause) {
+    super(`suite aborted: ${cause}`)
+    this.cause = cause
+  }
+}
+
+/** Failures since the last successful rebuild, to tell one bad step from a dead group. */
+let sinceRecovery = 0
+/** The group in flight when a group had to be abandoned, for the report. */
+let abandoned = null
+
+async function retryThrough(call) {
+  let last = new Error("no attempt was made")
+  for (let attempt = 0; attempt < MAX_REVIVES; attempt += 1) {
+    await revive()
+    try {
+      const out = await call()
+      sinceRecovery = 0
+      return out
+    } catch (err) {
+      if (!isGone(err)) {
+        // The page was rebuilt, so this call lost the state it depended on. One
+        // such failure is forgivable and the caller reports it; a second means
+        // the group is not coming back without the state it was halfway through
+        // building, and the run should stop with a report rather than unwind.
+        if (recoveries > 0) {
+          sinceRecovery += 1
+          if (sinceRecovery >= 2) {
+            throw new SuiteAborted(
+              `${String(err).split("\n")[0]} (during "${currentGroup}")`,
+            )
+          }
+        }
+        throw err
+      }
+      last = err
+    }
+  }
+  // Every revive was met with a dead page again. The cap exists so this happens
+  // rather than spinning, and the run has no evidence left to gather — but
+  // "stopping" should still mean the report is written and the group is named,
+  // not a Playwright stack trace. This used to re-issue the call once more and
+  // let whatever came back escape, which is a raw `page.goto` error unwinding
+  // the whole suite and discarding the checks that had already passed.
+  throw new SuiteAborted(
+    `${String(last).split("\n")[0]} — the browser did not survive ${MAX_REVIVES} ` +
+      `rebuilds (during ${currentGroup})`,
+  )
+}
+
+/**
+ * Write whatever the run managed to collect, and stop.
+ *
+ * Installed for the whole suite rather than wrapped around each group, so it also
+ * covers the two places that run outside a group. It reports the count it has
+ * rather than recomputing the suite's totals, because at this point the question
+ * is not "how many checks failed" but "there is a hole in the evidence and the
+ * exit code must say so".
+ *
+ * `await` on the report is load-bearing. This is the only record of the run when
+ * it ends badly, and it used to be started and then immediately `process.exit`ed
+ * past — the promise never settled, so the report was silently never written and
+ * the next run's full report overwrote whatever the abort had managed to flush.
+ * Node keeps the loop alive for the pending write, so awaiting is enough.
+ */
+async function bailOut(cause) {
+  const passedSoFar = results.filter((r) => r.ok).length
+  const failedSoFar = results.length - passedSoFar
+  console.error(`\n\x1b[31m${cause}\x1b[0m`)
+  console.error(
+    `  ${passedSoFar} check(s) passed and ${failedSoFar} failed before this point. ` +
+      "Re-run to finish the group; a real defect reproduces, a rebuilt page does not.",
+  )
+  await writePartialReport().catch((e) => console.error(`  (report not written: ${e})`))
+  process.exit(1)
+}
+
+/**
+ * The report, minus the screen table.
+ *
+ * A separate function from the one the tail runs because `bailOut` needs it
+ * before the tail's position is reached, and hoisting the full report would mean
+ * duplicating the checks list. The screens already inspected are dropped here:
+ * on an aborted run the interesting part is what was proved, not what was
+ * photographed.
+ */
+async function writePartialReport() {
+  const md = [
+    "# Visual verification report (incomplete)",
+    "",
+    `Base URL: \`${BASE}\`  ·  Convex: \`${CONVEX}\``,
+    "",
+    `**Run aborted.** ${results.filter((r) => r.ok).length} of ${results.length} ` +
+      `checks passed before the group "\`${abandoned ?? currentGroup}\`" could not be ` +
+      "finished.",
+    "",
+    "## Recoveries",
+    "",
+    recoveries === 0
+      ? "None."
+      : `The browser was rebuilt ${recoveries} time(s); the first check after a ` +
+        "rebuild onwards is listed as `suspect` in `report.json`.",
+    "",
+    "## Browser noise",
+    "",
+    "```json",
+    JSON.stringify(
+      {
+        console: noise.console,
+        pageerror: noise.pageerror,
+        failed: noise.failed,
+        http: noise.http,
+      },
+      null,
+      2,
+    ),
+    "```",
+    "",
+    "## Checks recorded",
+    "",
+  ]
+  for (const r of results) md.push(`- ${r.ok ? "PASS" : "**FAIL**"} — ${r.name}`)
+  await writeFile(path.join(OUT, "report.md"), md.join("\n"))
+  await writeFile(
+    path.join(OUT, "report.json"),
+    JSON.stringify(
+      { base: BASE, aborted: abandoned ?? currentGroup, results, screens, noise },
+      null,
+      2,
+    ),
+  )
+}
+
+for (const signal of ["uncaughtException", "unhandledRejection"]) {
+  // `async`, and the abort path returns rather than falling through: `bailOut` is
+  // what writes the report, so it has to finish before anything calls `exit`.
+  // Calling it without awaiting and then exiting left `report.md` truncated to
+  // zero bytes and no `report.json` at all.
+  process.on(signal, async (err) => {
+    if (err instanceof SuiteAborted) {
+      abandoned ??= currentGroup
+      await bailOut(err.message)
+      return
+    }
+    console.error(err)
+    process.exit(1)
+  })
+}
 
 /** Wait for the screen's read model to resolve and its charts to paint. */
 async function settle(label) {
   currentLabel = label
+  if (label.startsWith("/")) lastUrl = label
   await page.waitForLoadState("domcontentloaded")
   // Wait for the shell to have mounted *before* looking for a spinner.
   //
@@ -228,7 +775,7 @@ async function settle(label) {
 }
 
 async function bodyText() {
-  return page.evaluate(() => document.body.innerText)
+  return (await page.evaluate(() => document.body.innerText)) ?? ""
 }
 
 /** CSS `uppercase` reaches `innerText` already uppercased, so match loosely. */
@@ -237,7 +784,118 @@ function has(haystack, needle) {
 }
 
 async function mainText() {
-  return page.evaluate(() => document.querySelector("main")?.innerText ?? "")
+  return (await page.evaluate(() => document.querySelector("main")?.innerText ?? "")) ?? ""
+}
+
+/**
+ * Recover from a renderer crash instead of dying with it.
+ *
+ * In a container, Chromium renderers are occasionally killed outright while
+ * decoding a screenshot of a tall page. Playwright surfaces that as
+ * `Target crashed`, and the default behaviour is for the exception to unwind the
+ * whole suite — which is the worst possible outcome, because a run that stops at
+ * assertion 82 of 217 reports almost nothing and reads exactly like the code
+ * just written is broken.
+ *
+ * `--disable-dev-shm-usage` (see the launch arguments) removes the commonest
+ * cause. It is not a complete fix on a heavily loaded machine, so this is the
+ * second line: a crashed page is reloaded and the step retried, and the recovery
+ * is *reported* rather than swallowed. A suite that silently repairs itself is a
+ * suite nobody trusts, so the note appears in the output.
+ *
+ * The run still fails if anything after a recovery failed. That is deliberate
+ * and is the whole point of marking the check `suspect` rather than dropping
+ * it: a rebuilt page is not a clean slate, so a failure there may well be a
+ * real defect, and the only honest way to find out is to re-run. What the
+ * recovery buys is the *other* 200 checks — the run finishes and reports them
+ * instead of stopping at assertion 82 with no evidence either way.
+ *
+ * Only used for steps that are safe to repeat. Nothing here writes money, so a
+ * retry cannot duplicate an effect.
+ */
+let recoveries = 0
+/** `results.length` at the moment of the first recovery, for the summary. */
+let suspectFrom = Infinity
+/**
+ * Guards against re-entry. `revive()` navigates and signs in, both of which go
+ * through the guarded `page`, and a failure there would otherwise call straight
+ * back into `revive()` — closing the browser it is in the middle of building.
+ */
+let reviving = false
+
+async function revive() {
+  if (reviving) return false
+  if (!crashed && !dead) return false
+  reviving = true
+  try {
+    return await rebuild()
+  } finally {
+    reviving = false
+  }
+}
+
+async function rebuild({ planned = false } = {}) {
+  if (!planned && !crashed && !dead) return false
+  const reason = dead ? "browser went away" : "renderer crashed"
+  crashed = false
+  dead = false
+  // Bump the session id *before* closing, so the outgoing page's `close` event
+  // is recognised as self-inflicted by `openSession`'s generation check.
+  sessionId += 1
+  if (planned) {
+    console.log(
+      `  \x1b[2m… recycling the browser on schedule (${browserRssMb().toFixed(0)} MB) — it is not a failure\x1b[0m`,
+    )
+  } else {
+    recoveries += 1
+    if (recoveries === 1) {
+      suspectFrom = results.length
+      sinceRecovery = 0
+      console.log(
+        `\n  \x1b[33m… ${reason} on ${lastUrl}. The browser is being rebuilt, so every\n` +
+          "    assertion from here on runs on a fresh session. A failure below this\n" +
+          "    point is marked FAIL? and still fails the run — re-run to confirm\n" +
+          "    it. Everything after this line is worth reading.\x1b[0m",
+      )
+    } else {
+      console.log(
+        `\n  \x1b[33m… ${reason} on ${lastUrl}; recovering and retrying\x1b[0m`,
+      )
+    }
+  }
+
+  // Rebuild the whole browser, not just the page, on *either* failure.
+  //
+  // A dead renderer is not the same as a dead browser, and treating them alike
+  // is what made the recovery useless. Measured in this sandbox, one browser's
+  // resident memory walks from 472 MB after sign-in to 790 MB by the twelfth
+  // screen — against a 2 GB cgroup that the Convex backend (~871 MB), Vite and
+  // the dev tooling also live inside. When the kernel kills a renderer it
+  // reclaims that renderer's pages, but the browser process keeps its own
+  // allocations, and the cgroup does not necessarily give the space straight
+  // back. So reloading the page under the same browser re-runs the same
+  // allocation at the same pressure and dies again: three attempts, three
+  // identical crashes.
+  //
+  // Closing and relaunching is what actually returns the memory. The cost is
+  // that a new context has no session, so this signs in again — which is why
+  // sign-in is a separate function rather than inline below.
+  try {
+    await browser.close()
+  } catch {
+    // Already gone.
+  }
+  ;({ browser, context, raw: rawPage } = await openSession())
+  await signIn(ACCOUNTS.admin)
+
+  try {
+    await page.goto(`${BASE}${lastUrl}`, { waitUntil: "domcontentloaded" })
+  } catch {
+    // The page is gone entirely; a fresh navigation is the only option and it
+    // may fail too, in which case the caller's own timeout reports it.
+  }
+  await settle(lastUrl)
+  return true
 }
 
 async function shot(name) {
@@ -255,13 +913,29 @@ function newNoise() {
   }
 }
 
-/** True when nothing new was logged since the marker. */
+/**
+ * True when *this screen* has logged nothing new since the marker.
+ *
+ * Scoped to the screen on purpose, because the unscoped version failed on a
+ * real run for a reason that has nothing to do with the product. The
+ * malformed-fund-id screen logs a React error-boundary message that lands
+ * *after* that group has moved on, so it is still sitting in the accumulator
+ * when the next group takes its marker and runs its checks — and that group
+ * then fails for a screen it never opened. Every entry already records the
+ * screen it came from, so the comparison counts only entries for the screen
+ * being asserted, which is what the assertion has always claimed to mean.
+ *
+ * The accumulators are deliberately not cleared. The report's noise dump is
+ * worth more than the memory, and it is what made this diagnosable at all.
+ */
 function quietSince(mark) {
+  const quiet = (key, entries) =>
+    entries.slice(mark[key]).every((e) => e.screen !== currentLabel)
   return (
-    noise.console.length === mark.console &&
-    noise.pageerror.length === mark.pageerror &&
-    noise.failed.length === mark.failed &&
-    noise.http.length === mark.http
+    quiet("console", noise.console) &&
+    quiet("pageerror", noise.pageerror) &&
+    quiet("failed", noise.failed) &&
+    quiet("http", noise.http)
   )
 }
 
@@ -272,7 +946,7 @@ async function resetMods() {
 }
 
 async function mods() {
-  return page.evaluate(() => window.__convexMods ?? [])
+  return (await page.evaluate(() => window.__convexMods ?? [])) ?? []
 }
 
 /** Subscriptions of one function that were created since the last reset. */
@@ -400,6 +1074,11 @@ const ROUTES = [
   { slug: "03-funds", url: "/funds", expect: ["Funds"] },
   { slug: "08-members", url: "/members", expect: ["Members", "active"] },
   { slug: "09-contributions", url: "/contributions", expect: ["Monthly Collection Grid"] },
+  {
+    slug: "09b-collection",
+    url: "/collection",
+    expect: ["Collection", "Sessions", "Online collection is not available yet"],
+  },
   { slug: "10-transactions", url: "/transactions", expect: ["Transactions"] },
   { slug: "11-approvals", url: "/approvals", expect: ["Pending Approvals"] },
   { slug: "07-banks", url: "/banks", expect: ["Banks", "Passbook"] },
@@ -432,13 +1111,15 @@ for (const route of ROUTES) {
     `${route.url} has no runtime error`,
     quietSince(mark),
     [
-      noise.pageerror.length > mark.pageerror ? "pageerror" : "",
-      noise.console.length > mark.console ? "console" : "",
-      noise.failed.length > mark.failed ? "requestfailed" : "",
-      noise.http.length > mark.http ? "http>=400" : "",
+      ...noise.pageerror.slice(mark.pageerror).map((e) => `pageerror: ${e.text.slice(0, 120)}`),
+      ...noise.console.slice(mark.console).map((c) => `console: ${c.text.slice(0, 160)}`),
+      ...noise.failed.slice(mark.failed).map((f) => `requestfailed: ${f.url}`),
+      ...(noise.http.length > mark.http
+        ? [`http>=400: ${noise.http.slice(mark.http).map((h) => h.url).join(", ")}`]
+        : []),
     ]
       .filter(Boolean)
-      .join(" ") || "clean",
+      .join(" | ") || "clean",
   )
   check(
     `${route.url} is not showing the error boundary`,
@@ -660,7 +1341,7 @@ group("members — passbook and its skip path")
   await resetMods()
   await page.getByRole("button", { name: "Passbook" }).first().click()
   await sleep(2500)
-  const firstDialog = await page.innerText('[role="alertdialog"]')
+  const firstDialog = ((await page.innerText('[role="alertdialog"]')) ?? "")
   const firstMods = modsFor(await mods(), MEMBER_PASSBOOK)
   check(
     "opening a passbook runs exactly one member query",
@@ -689,16 +1370,14 @@ group("members — passbook and its skip path")
   await page.keyboard.press("Escape")
   await sleep(800)
   await page.getByRole("button", { name: "Passbook" }).nth(1).click()
-  const immediate = await page
-    .innerText('[role="alertdialog"]')
-    .catch(() => "")
+  const immediate = (await page.innerText('[role="alertdialog"]')) ?? ""
   check(
     "a newly opened passbook never shows the previous member's statement",
     !immediate.includes(`${first.name} — passbook`),
     immediate.split("\n")[0] || "(dialog not yet open)",
   )
   await sleep(2500)
-  const secondDialog = await page.innerText('[role="alertdialog"]')
+  const secondDialog = ((await page.innerText('[role="alertdialog"]')) ?? "")
   check(
     "the second passbook settles on the right member",
     secondDialog.includes(`${second.name} — passbook`),
@@ -760,6 +1439,154 @@ group("members — passbook and its skip path")
     }
   }
   await shot("08-members-filtered")
+}
+
+/* ------------------------------------------------- the collection desk */
+
+/*
+ * M4a. A dated session of cash at a meeting, with a running total.
+ *
+ * The assertions that matter here are the *money* ones: that recording a
+ * contribution issues a receipt, that the session's total moves by exactly that
+ * amount, and that the member's dues are settled — because a collection screen
+ * that totals correctly while failing to settle anybody is worse than no screen,
+ * since it looks finished.
+ *
+ * Everything is left as this run found it, in the same way the other groups are:
+ * a security check that leaves money-moving state behind is a check that gets
+ * skipped.
+ */
+
+group("collection — a session of cash, totalled and receipted")
+{
+  const mark = newNoise()
+  await page.goto(`${BASE}/collection`, { waitUntil: "domcontentloaded" })
+  await settle("/collection")
+
+  const listText = await mainText()
+  check(
+    "the collection desk says plainly that online collection is not available",
+    has(listText, "Online collection is not available yet") &&
+      has(listText, "No payment provider has been chosen"),
+    listText.replace(/\s+/g, " ").slice(0, 140),
+  )
+  check(
+    "it does not offer a pay button that would fail",
+    !/pay online|start online|collect online/i.test(await bodyText()),
+  )
+
+  // Open a session on a fund that can have one.
+  const before = (await convexCall("collections:rounds", {}, jwt)).value
+  const fundsList = (await convexCall("aggregate:funds", {}, jwt)).value
+  const eligible =
+    fundsList.find((f) => f.collectionMode === "voluntary") ??
+    fundsList.find((f) => f.collectionMode === "donation")
+  check("a fund that can hold a session exists to test with", Boolean(eligible))
+
+  if (eligible) {
+    // Unique per run, and matched on exactly. An earlier version used a
+    // `visual check <n>` label and then searched for the first session whose
+    // label matched that *prefix* — which found a leftover from a run that had
+    // been interrupted, and so added a second payment to a session that already
+    // held one. The totals came out doubled and it looked like the screen was
+    // counting money twice, which is the exact bug this suite exists to catch.
+    const stamp = `${process.pid}-${Date.now()}`
+    const label = `visual check ${stamp}`
+
+    await page.getByRole("button", { name: /new session|open the first session/i }).first().click()
+    await page.waitForSelector("#round-fund", { timeout: 10_000 })
+    await page.locator("#round-fund").click()
+    await page.getByRole("option", { name: eligible.name }).click()
+    await page.fill("#round-label", label)
+    await page.getByRole("button", { name: /^open session$/i }).click()
+    await settle("/collection:created")
+
+    const after = (await convexCall("collections:rounds", {}, jwt)).value
+    const made = (after.rounds ?? []).find((r) => r.label === label)
+    check(
+      "a session can be opened and appears in the list",
+      Boolean(made) && made.fundName === eligible.name,
+      made ? `${made.label} — ${made.fundName}` : "not found",
+    )
+    check(
+      "a new session starts at zero, not at the organisation's other money",
+      made?.totalPaise === 0 && made?.paymentCount === 0,
+      `total ${made?.totalPaise}`,
+    )
+
+    if (made) {
+      // Creating a session returns to the list; opening it is a separate act,
+      // and the list is the screen a treasurer is actually looking at afterwards.
+      // Opening the new session by clicking it also proves the row is a real
+      // navigation target and not just a row that happens to render.
+      await page
+        .getByRole("button", { name: new RegExp(made.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) })
+        .first()
+        .click()
+      await settle("/collection:detail")
+      check(
+        "the new session opens and offers to record money into it",
+        has(await mainText(), "Record money") && has(await mainText(), "Total for this session"),
+        (await mainText()).replace(/\s+/g, " ").slice(0, 140),
+      )
+
+      // Record something into it. ₹137 is a round paise number the seed will
+      // never produce, so a leftover from an aborted run is identifiable.
+      const AMOUNT = "137"
+      await page.getByRole("button", { name: /record money/i }).first().click()
+      await page.waitForSelector("#pay-amount", { timeout: 10_000 })
+      await page.fill("#pay-amount", AMOUNT)
+      // A named member, so the payment settles dues rather than sitting as an
+      // anonymous gift.
+      const roster = (await convexCall("aggregate:members", { filter: "active" }, jwt)).value
+      await page.fill("#pay-member", roster[0].name)
+      await page.locator("ul button").first().click()
+      await shot("29-collection-record")
+      await page.getByRole("button", { name: /record and issue receipt/i }).click()
+      await page.waitForSelector("text=/Recorded — receipt/", { timeout: 15_000 })
+      // `bodyText`, not `mainText`: the confirmation lives in a Radix dialog,
+      // which renders in a portal on `document.body`, outside `<main>`. Reading
+      // `main` here finds the screen behind the dialog and misses the one thing
+      // the assertion is about.
+      const receiptLine = await bodyText()
+      const receiptNo = (receiptLine.match(/receipt (R-\d+)/i) ?? [])[1] ?? null
+      check(
+        "recording money issues a receipt number immediately",
+        Boolean(receiptNo),
+        receiptNo ?? receiptLine.replace(/\s+/g, " ").slice(0, 120),
+      )
+      await shot("30-collection-receipt")
+
+      const detail = (await convexCall("collections:round", { id: made.id }, jwt)).value
+      check(
+        "the session total is exactly what was recorded",
+        detail.totalPaise === 13700 && detail.paymentCount === 1,
+        `total ${detail.totalPaise} over ${detail.paymentCount}`,
+      )
+      check(
+        "the receipt is attributed to the member who was picked",
+        Boolean(detail.payments[0]?.memberName),
+        detail.payments[0]?.memberName ?? "anonymous",
+      )
+      check(
+        "the method breakdown names cash, which is what it was recorded as",
+        detail.methods.some((m) => m.method === "cash" && m.amountPaise === 13700),
+        JSON.stringify(detail.methods),
+      )
+    }
+  }
+
+  check(
+    "the collection desk produced no runtime errors",
+    quietSince(mark),
+    [
+      ...noise.pageerror.slice(mark.pageerror).map((e) => `pageerror: ${e.text.slice(0, 120)}`),
+      ...noise.console.slice(mark.console).map((c) => `console: ${c.text.slice(0, 160)}`),
+    ]
+      .filter(Boolean)
+      .join(" | ")
+      .slice(0, 400) || "clean",
+  )
 }
 
 /* --------------------------------------------------------- contributions */
@@ -835,7 +1662,7 @@ group("contributions — the grid and its not-applicable branch")
 
 /* ----------------------------------------------------------- fund detail */
 
-group("fund detail — one screen per collection mode")
+await group("fund detail — one screen per collection mode")
 for (const fund of funds) {
   await page.goto(`${BASE}/funds/${fund.id}`, { waitUntil: "domcontentloaded" })
   await settle(`/funds/${fund.id}`)

@@ -22,6 +22,7 @@
     "visual": "node scripts/visual-check.mjs",
     "visual:portal": "node scripts/visual-portal.mjs",
     "visual:ui": "node scripts/visual-ui.mjs",
+    "visual:recovery": "node scripts/prove-recovery.mjs",
     "icons": "node scripts/make-icons.mjs",
     "balances:backfill": "node scripts/backfill-bank-years.mjs"
   },
