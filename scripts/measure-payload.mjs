@@ -58,6 +58,9 @@ const AGGREGATES = [
   ["aggregate:audit", { limit: 60 }, "Settings"],
   ["collections:rounds", {}, "Collection desk"],
   ["collections:roundMembers", {}, "Collection desk (member picker)"],
+  ["reminders:defaulters", { sort: "oldest" }, "Reminders (defaulter list)"],
+  ["reminders:preview", {}, "Reminders (this month's plan)"],
+  ["reminders:campaigns", {}, "Reminders (run history)"],
   ["collections:round", { id: "@round" }, "Collection desk (an open session)"],
 ]
 

@@ -68,6 +68,9 @@ const cases = [
   ["reconciliation:status", {}],
   ["collections:rounds", {}],
   ["collections:roundMembers", {}],
+  ["reminders:defaulters", { sort: "oldest" }],
+  ["reminders:preview", {}],
+  ["reminders:campaigns", {}],
   ["balances:verify", {}],
 ]
 
