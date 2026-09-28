@@ -69,6 +69,7 @@ const FundDetail = lazy(() => import("@/routes/fund-detail"))
 const Members = lazy(() => import("@/routes/members"))
 const Contributions = lazy(() => import("@/routes/contributions"))
 const Collection = lazy(() => import("@/routes/collection"))
+const Reminders = lazy(() => import("@/routes/reminders"))
 const Transactions = lazy(() => import("@/routes/transactions"))
 const Approvals = lazy(() => import("@/routes/approvals"))
 const Banks = lazy(() => import("@/routes/banks"))
@@ -190,6 +191,7 @@ export default function App() {
           <Route path="member-accounts" element={<MemberAccounts />} />
           <Route path="contributions" element={<Contributions />} />
           <Route path="collection" element={<Collection />} />
+          <Route path="reminders" element={<Reminders />} />
           <Route path="transactions" element={<Transactions />} />
           <Route path="approvals" element={<Approvals />} />
           <Route path="payment-requests" element={<PaymentRequests />} />

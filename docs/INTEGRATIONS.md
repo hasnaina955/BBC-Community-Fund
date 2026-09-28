@@ -82,8 +82,8 @@ Set these in Settings → Environment, and mirror them to production with
 
 ## Messaging — Knock
 
-**Milestone:** M5 · **Purpose:** receipts, reminders, and arrears notices over
-email, SMS, and WhatsApp
+**Milestone:** M5 (seam built, vendor not connected) · **Purpose:** receipts,
+reminders, and arrears notices over email, SMS, and WhatsApp
 
 Chosen because it is one API across several channels, with workflow
 orchestration, delivery tracking, and per-recipient preferences. Receipts and
@@ -94,6 +94,19 @@ of reminders.
 For a community product, the WhatsApp channel is what actually gets read. SMS is
 the fallback for members without it; email is where receipts and statements
 belong.
+
+### Status — the seam is built, nothing is connected
+
+`convex/lib/notify.ts` declares the `NotifyProvider` interface, the three
+templates and the email/SMS renderers, and its only implementation is an
+offline stub. `hasProvider()` returns `false`, and the UI copy branches on it:
+`/reminders` states that no provider is connected and renders no control that
+would claim to have sent something.
+
+That is the shipping state of this build, not a degraded mode. The decision
+layer — who is chased, on which channel, who is skipped and why — is complete
+and fully verified; the transport is the only thing missing, and adding it
+means writing one implementation of the interface.
 
 ### What gets built
 
@@ -108,15 +121,26 @@ belong.
 ### Rules
 
 - **Consent and opt-out.** A member can stop reminders. Opt-out is captured at
-  signup and honored on every send.
+  signup and honored on every send. **Built and asserted:** `setPreference`
+  requires a member, targets only the signed-in account's own row, and a
+  treasurer cannot grant consent on somebody's behalf — a treasurer *can* record
+  a refusal made in person, because a member who asks to be left alone does not
+  always have an account.
 - **Financial statements by email; nudges by WhatsApp.** Do not put a full
   statement in an SMS.
 - **Every send is logged** with its status, so a treasurer can answer "did they
-  get the reminder?" — and bounce handling stops retries to dead numbers.
+  get the reminder?" — and bounce handling stops retries to dead numbers. The
+  campaign and per-recipient rows exist; the status updates arrive with the
+  vendor.
 - **Send is not the same as delivered.** The UI shows delivery status separately
   from the send.
+- **A run is a record.** `reminderCampaigns` keeps who was considered, who was
+  queued, and who was skipped with the reason. Nothing is a bare loop.
 
 ### Environment
+
+Not yet required — `hasProvider()` is a constant until an implementation is
+added. When it is:
 
 | Variable | Where |
 | --- | --- |

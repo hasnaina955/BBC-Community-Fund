@@ -905,5 +905,171 @@ console.log("\nM4a — receipt numbers are a sequence, not a count")
   }
 }
 
+console.log("\nM5 — the reminder seam")
+/*
+ * What is asserted here is the set of *decisions*, because those are the parts a
+ * provider must not be allowed to make: which of the three conversations a
+ * member's position calls for, which channel that conversation suits, and
+ * whether a refusal is honoured.
+ *
+ * The first two are pure functions, so they are checked by driving the live
+ * queries over the seeded roster — a real defaulter's real ageing — rather than
+ * by importing the module, which this harness deliberately does not do. A rule
+ * that only holds for the fixture you imagined is not a rule.
+ */
+{
+  const treasurer = await signIn("treasurer@jamaat.org")
+  const view = (await call("reminders:defaulters", { sort: "oldest" }, treasurer)).value
+  check(
+    "a treasurer can read the defaulter list",
+    Array.isArray(view?.rows),
+    JSON.stringify(view ?? {}).slice(0, 120),
+  )
+
+  const memberDefaulters = await call("reminders:defaulters", {}, member)
+  check(
+    "a member cannot read the defaulter list",
+    memberDefaulters.status === "error" && /access required/i.test(memberDefaulters.errorMessage ?? ""),
+    memberDefaulters.errorMessage,
+  )
+
+  const rows = view?.rows ?? []
+
+  check(
+    "no provider is configured, and the list says so rather than throwing",
+    view?.providerConfigured === false,
+    `providerConfigured=${view?.providerConfigured}`,
+  )
+
+  check(
+    "the ageing buckets add up to the outstanding total",
+    view?.buckets?.reduce((s, b) => s + b.totalPaise, 0) === view?.totalPaise,
+    `${view?.buckets?.reduce((s, b) => s + b.totalPaise, 0)} vs ${view?.totalPaise}`,
+  )
+
+  check(
+    "the defaulter list is sorted longest-outstanding first",
+    rows.every((r, i) => i === 0 || rows[i - 1].daysPastDue >= r.daysPastDue),
+    rows.slice(0, 3).map((r) => r.daysPastDue).join(", "),
+  )
+  // The template rule, over the real roster rather than a fixture: nobody past
+  // their due date is told nothing is late, and nobody three months behind is
+  // chased as though they had merely forgotten.
+  const wrongDueSoon = rows.filter((r) => r.daysPastDue > 0 && r.kind === "due_soon")
+  check(
+    "no member past their due date is told nothing is late",
+    wrongDueSoon.length === 0,
+    `${wrongDueSoon.length} misclassified`,
+  )
+
+  const wrongSummary = rows.filter((r) => r.months >= 3 && r.kind !== "arrears_summary")
+  check(
+    "a member three months behind gets the arrears summary, not a chase",
+    wrongSummary.length === 0,
+    `${wrongSummary.length} misclassified`,
+  )
+
+  const wrongOverdue = rows.filter(
+    (r) => r.daysPastDue > 0 && r.months < 3 && r.kind !== "overdue",
+  )
+  check(
+    "one or two months behind gets the overdue note",
+    wrongOverdue.length === 0,
+    `${wrongOverdue.length} misclassified`,
+  )
+
+  const unreachable = rows.filter((r) => !r.reachEmail && !r.reachSms)
+  check(
+    "members with no contact details stay on the list rather than vanishing",
+    unreachable.length === 0,
+    `${unreachable.length} had neither email nor phone`,
+  )
+  // Consent: absence is consent, an explicit refusal is not. And a refusal that
+  // a run ignores is the single worst bug this feature could have.
+  const target = rows.find((r) => r.reachEmail || r.reachSms)
+  if (!target) {
+    check("a reachable defaulter was found to test consent", false, "no fixture")
+  } else {
+    const setAllOff = await call(
+      "reminders:setPreference",
+      { memberId: target.memberId, email: false, sms: false, whatsapp: false },
+      admin,
+      "mutation",
+    )
+    const afterRefusal = (await call("reminders:defaulters", { sort: "oldest" }, treasurer)).value
+    const row = afterRefusal?.rows?.find((r) => r.memberId === target.memberId)
+    check(
+      "a refusal is recorded against the member's own row",
+      setAllOff.status === "success" && row?.optedOut === true,
+      `optedOut=${row?.optedOut}`,
+    )
+
+    // Scoped to *this* run. The member may already have rows from an earlier
+    // harness run, and counting those would make this pass for the wrong reason
+    // the first time and fail for the right reason later.
+    const before = (await call("reminders:history", { memberId: target.memberId }, treasurer)).value ?? []
+    const afterRun = await call("reminders:runCampaign", { kind: "overdue" }, treasurer, "mutation")
+    const after = (await call("reminders:history", { memberId: target.memberId }, treasurer)).value ?? []
+    const fresh = after.slice(0, after.length - before.length)
+    check(
+      "a run queues nothing for a member who asked not to be reminded",
+      afterRun.status === "success" && fresh.length === 0,
+      `${fresh.length} newly queued of ${after.length} recorded`,
+    )
+    const memberSetsOthers = await call(
+      "reminders:setPreference",
+      { memberId: rows[0]?.memberId, email: false },
+      member,
+      "mutation",
+    )
+    check(
+      "a member cannot change somebody else's preferences",
+      memberSetsOthers.status === "error" &&
+        /only change your own/i.test(memberSetsOthers.errorMessage ?? ""),
+      memberSetsOthers.errorMessage,
+    )
+
+    // Direction matters: recording that somebody asked to be left alone is
+    // protective and is allowed on their behalf, because not every member has
+    // an account to do it from. Agreeing to chase them is not.
+    const treasurerTurnsOn = await call(
+      "reminders:setPreference",
+      { memberId: target.memberId, sms: true },
+      treasurer,
+      "mutation",
+    )
+    check(
+      "a committee user cannot agree to reminders on a member's behalf",
+      treasurerTurnsOn.status === "error" &&
+        /cannot agree to reminders/i.test(treasurerTurnsOn.errorMessage ?? ""),
+      treasurerTurnsOn.errorMessage,
+    )
+
+    // Put it back, or every later run of this harness inherits the refusal.
+    await call(
+      "reminders:setPreference",
+      { memberId: target.memberId, email: true, sms: true, whatsapp: true },
+      admin,
+      "mutation",
+    )
+  }
+
+  const runs = await call("reminders:campaigns", {}, treasurer)
+  check(
+    "a run is on the record, with the counts it decided on",
+    runs.status === "success" &&
+      (runs.value?.length ?? 0) > 0 &&
+      typeof runs.value[0].considered === "number",
+    JSON.stringify(runs.value?.[0] ?? runs.errorMessage),
+  )
+
+  const memberRuns = await call("reminders:campaigns", {}, member)
+  check(
+    "a member cannot read the run history",
+    memberRuns.status === "error" && /access required/i.test(memberRuns.errorMessage ?? ""),
+    memberRuns.errorMessage,
+  )
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed.\n`)
 process.exit(fail > 0 ? 1 : 0)

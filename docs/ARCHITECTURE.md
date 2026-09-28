@@ -627,6 +627,14 @@ paying half a month all fall out naturally. None of them are special cases.
   `(orgId, fundId, effectiveDate)` for one fund's year. `by_date` and
   `by_fund_date` are what keep a year-bounded read from becoming a full scan.
 - `payments`: `(orgId, memberId)` for the passbook
+- `reminderCampaigns`: `(orgId, createdAt)` for the "who have we chased" list, and
+  `(orgId, kind, period)` — `by_period` — which is also the idempotency key a
+  retried cron run collides on
+- `reminders`: `(orgId, memberId)` for one member's history, `(orgId, campaignId)`
+  for the run's contents
+- `notificationPreferences`: one row per `(orgId, memberId)`, holding the
+  channels refused and the reason. Absence of a row means "no preference
+  recorded", which is *not* the same as consent — see the reminders section
 - Every table carries `orgId`; **every** query filters on it. Enforce this in a
   shared helper so it cannot be forgotten.
 
@@ -665,6 +673,16 @@ Roles are unchanged from the original — four roles, sensibly chosen.
 | Manage users & invites | ✓ | | | | |
 | Settings, fiscal-year close | ✓ | | | | |
 | Audit log | ✓ | | | | |
+| See the defaulter list, plan a run | ✓ | ✓ | | ✓ | |
+| **Record their own reminder preference** | | | | | ✓ (own row only) |
+| Record a refusal on someone's behalf | ✓ | ✓ | | | |
+
+The last two rows are the interesting ones and they are deliberately
+asymmetric. A treasurer cannot agree to reminders **for** a member — consent
+somebody else did not give is not consent — but a treasurer can record a refusal
+made in person, because a member who asks to be left alone does not always have
+an account with us. Turning something off needs the person; turning it on does
+not. See the reminders section below.
 
 Rules:
 
@@ -676,6 +694,11 @@ Rules:
    handler" pattern; the helper is the gate.
 4. `member` is a role on a user, not a separate table. It gates the portal, and
    it is the reason the console has its own gate — see *The member portal* above.
+5. **A member-scoped function takes no member id.** It resolves the row from the
+   session token, so there is no argument to pass wrongly. This is the rule that
+   makes the two rows above expressible, and it is why
+   `reminders:myPreferences` and `reminders:setPreference` exist as a pair
+   rather than the generic one.
 
 ---
 
@@ -708,6 +731,8 @@ convex/
     ├── collection.ts      the only writer of payments
     ├── sequence.ts        receipt numbers
     ├── payments.ts        the gateway provider seam
+    ├── notify.ts          the notification provider seam, and the templates
+    ├── reminders.ts       who to chase, on which channel, and who not
     ├── arrears.ts         due dates, days past due, ageing buckets
     └── funds.ts           the collectionMode rules
 src/
@@ -771,6 +796,53 @@ collection desk is opened in a hurry.
 on `idempotencyKey` through the `by_idempotency` index and returns the payment it
 already wrote. A webhook is only another caller, so the replay guarantee it will
 depend on is now asserted in `bun run check` rather than assumed until M4b.
+
+---
+
+## Reminders: a run is a record, not a loop
+
+`/reminders` is the treasury's arrears screen: who owes what, how long it has
+been outstanding, and whether we have already chased them. It is built the same
+way the collection desk was — as if the vendor already existed.
+
+**The transport is a seam.** `convex/lib/notify.ts` declares a
+`NotifyProvider` (queue, status lookup, and a per-recipient event) alongside the
+three templates — due-soon, overdue, arrears summary — and the renderers for
+email body and SMS body. `provider()` returns the offline stub, and
+`hasProvider()` is what the screen asks before it offers a button. The visible
+consequence is deliberate: **with no provider configured the screen states that
+nothing is being sent**, and it does not render a control that would claim
+otherwise. Knock is the recommendation and it changes this one file.
+
+**The decision layer is the part that must not belong to a vendor.** Which of
+the three conversations a member's position calls for, which channel that
+conversation suits, whether the member has refused that channel, and how to
+render a phone number — all of that is `convex/lib/reminders.ts` and none of it
+is Knock's. The ageing buckets come from `lib/arrears` unchanged, so the
+defaulter list and the reports page cannot disagree about how old a debt is.
+
+**Pressing the button writes a row.** `reminders:runCampaign` records a
+`reminderCampaigns` document holding the members it considered, the ones it
+queued, and the ones it skipped **with the reason** — `opted_out`,
+`no_destination`, `already_reminded`. That is the whole point of the table. A
+send loop has no memory; "you reminded 61 people" is an answerable question only
+if the decision was written down, and a treasurer who is wrong about it needs the
+list to argue with. The monthly cron (`reminders:runScheduled`, an
+`internalMutation` so nothing in the app can reach it) and the button call the
+same builder, so the two cannot diverge.
+
+Scheduled runs are idempotent per `(org, kind, period)`. Manual runs are
+deliberately **not**: crons retry, a human pressing twice has asked twice, and
+silently ignoring the second press is its own bug.
+
+**Consent is the one thing a console user cannot grant for someone else.**
+`setPreference` requires a member, and the target is always the row belonging to
+the signed-in account — there is no member-id argument to get wrong, and
+`check-security.mjs` asserts that a treasurer cannot do it on somebody's behalf.
+The asymmetry with M2's approval flow is intentional and worth stating: a
+treasurer **can** record a refusal made in person, because a member who asks to
+be left alone does not always have an account with us. Turning something off
+needs the person; turning it on does not.
 
 ---
 

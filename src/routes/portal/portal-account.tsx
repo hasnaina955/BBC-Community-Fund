@@ -1,7 +1,7 @@
 import { useState } from "react"
-import { useMutation } from "convex/react"
+import { useMutation, useQuery } from "convex/react"
 import { Link } from "react-router-dom"
-import { BadgeCheck, CircleAlert, KeyRound, LogOut, Phone } from "lucide-react"
+import { BadgeCheck, BellRing, CircleAlert, KeyRound, LogOut, Phone } from "lucide-react"
 import { api } from "../../../convex/_generated/api"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -196,6 +196,8 @@ export default function PortalAccount() {
             </Card>
           ) : null}
 
+          {data.memberId && !isStaff ? <ReminderPreferences /> : null}
+
           <Card>
             <CardContent className="space-y-2 p-5 text-sm text-muted-foreground">
               <p className="font-medium text-foreground">Who can see this</p>
@@ -221,6 +223,83 @@ export default function PortalAccount() {
         </div>
       )}
     </WithReadModel>
+  )
+}
+
+/**
+ * Turning reminders off.
+ *
+ * The exit criterion for M5 is that a member can stop being chased, and that has
+ * to mean *from the account they already have* — a person who is being asked for
+ * money they cannot pay should not have to phone a treasurer to ask for silence.
+ *
+ * Each channel is its own switch rather than one "stop" switch, because the
+ * three reach different people: a member with no working email should not have
+ * their SMS reminders switched off by turning off the one channel they do not
+ * use. Nothing is on by default *here* — absence of a decision means consent,
+ * because this community phones its members and a member who never opened a
+ * settings page has not refused anything.
+ */
+function ReminderPreferences() {
+  const prefs = useQuery(api.reminders.myPreferences, {})
+  const setPreference = useMutation(api.reminders.setPreference)
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const on = prefs?.memberId ? prefs.sms !== false : true
+
+  const toggle = async (channel: "email" | "sms" | "whatsapp", value: boolean) => {
+    setBusy(channel)
+    try {
+      await setPreference({ [channel]: value })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Card data-testid="reminder-preferences">
+      <CardContent className="space-y-4 p-5">
+        <div className="flex items-start gap-2">
+          <BellRing className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <div>
+            <p className="text-sm font-medium">Reminders about what you owe</p>
+            <p className="text-xs text-muted-foreground">
+              The treasurer can send a note when a contribution is due, or when
+              something is outstanding. You can stop any of it here, and you can
+              turn it back on.
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {(["email", "sms", "whatsapp"] as const).map((channel) => {
+            const value = prefs?.[channel] !== false
+            return (
+              <div key={channel} className="flex items-center justify-between gap-3">
+                <span className="text-sm capitalize">{channel}</span>
+                <Button
+                  variant={value ? "outline" : "secondary"}
+                  size="sm"
+                  disabled={busy === channel}
+                  onClick={() => toggle(channel, !value)}
+                  aria-label={`${value ? "Stop" : "Start"} ${channel} reminders`}
+                >
+                  {busy === channel ? "Saving…" : value ? "On" : "Off"}
+                </Button>
+              </div>
+            )
+          })}
+        </div>
+
+        <Separator />
+
+        <p className="text-xs text-muted-foreground">
+          {on
+            ? "You are currently reachable for reminders. Turning one off takes effect on the next run."
+            : "You have asked not to be chased on any channel. A treasurer can see that, and cannot turn it back on for you."}
+        </p>
+      </CardContent>
+    </Card>
   )
 }
 

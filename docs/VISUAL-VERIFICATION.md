@@ -7,7 +7,7 @@ numbers on screen against the read model that produced them, and asserts the
 seeded deployment.
 
 The latest pass was run on 28 September 2026 against 10,051 ledger entries
-spanning 2018–2026: **232 checks, all passing.** Two defects that made *every*
+spanning 2018–2026: **248 checks, all passing.** Two defects that made *every*
 screen blank were found this way; neither was visible to `bun run check`,
 `bun run smoke` or `bun run measure`, all of which speak HTTP and never render a
 pixel.
@@ -24,6 +24,7 @@ pixel.
 | Roles | A viewer can read every screen, is refused `/users` and `/settings` in the UI, and is offered no control that could only fail. |
 | Error paths | A malformed fund id, a deactivated account, an unknown URL, `/auth` while signed in. |
 | Money, written live | The collection desk opens a session, records cash and cheque against it, and the running total, the receipt number and the member's balance all follow. |
+| Reminders | The arrears list is populated and sorted longest-outstanding first, the ageing is bucketed, a search with no matches says so rather than showing everyone, and pressing the button confirms first and then leaves a row. |
 
 The `skip` assertions are direct rather than inferred. Convex records a query
 subscription as an `Add` in a `ModifyQuerySet` message and releases it with a
@@ -178,6 +179,57 @@ second one. The visual suite's job is the part only a rendered page can prove.
 
 ---
 
+## M5 — reminders
+
+`/reminders` is the first screen whose subject is a decision rather than a
+number, and that changes what is worth asserting. A treasury figure is right or
+wrong. "Who should we chase this month, and on what channel, and who said no" is
+a judgement, and the only way to test a judgement from the outside is to check
+that the screen shows its reasoning and not merely its conclusion.
+
+### The two defects it found
+
+**The confirm dialog renders outside `<main>`.** The dialog asserts on
+`mainText()`, and the first draft failed every time — the dialog was not in the
+`<main>`. That is the assertion being right about the user and wrong about the
+DOM, and the fix was to read the dialog where the dialog actually is.
+
+**The sort assertion was reading the wrong table.** "The list is sorted
+longest-outstanding first" passed a `tbody tr td:first-child` query, which on
+that screen also matched the **runs** table underneath it. The assertion was
+green and meaningless. It now scopes to the defaulter table and reads the age
+column, asserting the order of the numbers rather than that the strings happen
+to be distinct.
+
+Both are the same lesson as the M4a `<Badge>`-inside-`<p>` defect, from the other
+direction: a check that cannot fail is worse than no check, because it is
+counted.
+
+### What the group asserts
+
+Twelve checks, plus the four the route sweep adds for every new route.
+
+- The screen states plainly that no provider is connected, and **offers no
+  button that would claim to have sent something**.
+- The ageing is presented in buckets, not as one undifferentiated total.
+- The defaulter list is populated — 77 rows against the seeded data.
+- It is sorted longest-outstanding first, checked on the numbers.
+- Nobody on the list is described as owing nothing.
+- A search with no matches says so, rather than falling back to showing
+  everyone — the failure mode a filter with an empty result set always has.
+- Pressing the button **asks first**, and the confirmation names the count.
+- The run is recorded and the outcome is stated plainly.
+- The runs table has a row, because a run is a record and not a loop.
+- A member's reminder history is readable.
+- The screen produced no runtime errors.
+
+The consent rules are **not** here. That a treasurer cannot agree to reminders on
+a member's behalf is an authorisation fact, and it is asserted in
+`bun run check` where it can be tried from every role rather than from one
+screen.
+
+---
+
 ## Surviving a killed browser
 
 Chromium's renderers in this sandbox are killed by the OOM killer. The first
@@ -197,21 +249,29 @@ releasing; full-page screenshots add spikes on top. So
 revivals.
 
 Recovering only *after* a crash is a losing trade, because the kill has to happen
-first. So the suite also recycles **proactively**: every four groups — or sooner
-if Chromium is over 500 MB — it rebuilds the browser, and says so on a dimmed
-line that is explicitly not a failure. The rebuild is performed inside `guard()`,
-the one place every browser call already passes through, and *before* the call is
-issued, so the call lands on the rebuilt page. Doing it in `group()` looked
-equivalent and raced twice: the group's opening navigation went out while the
-browser it addressed was being closed, which reports `Target page, context or
+first. So the suite also recycles **proactively**: every three groups — or
+sooner if Chromium is over 440 MB — it rebuilds the browser, and says so on a
+dimmed line that is explicitly not a failure. The rebuild is performed inside
+`guard()`, the one place every browser call already passes through, and *before*
+the call is issued, so the call lands on the rebuilt page. Doing it in `group()`
+looked equivalent and raced twice: the group's opening navigation went out while
+the browser it addressed was being closed, which reports `Target page, context or
 browser has been closed` and is indistinguishable from a product fault.
+
+**The threshold started at 500 MB and was wrong.** The backend was OOM-killed on
+a later run with the browser at 586 MB *at the moment it recycled* — because the
+peak is the memory between group boundaries, not the reading at one. A fresh
+Chromium is already 472 MB, so a 440 MB threshold is not "recycle on schedule" but
+"recycle on arrival", which is precisely the intent. The interval went from four
+groups to three at the same time, because the reminders group is heavier than
+most: it renders 77 rows and reads four collections on open.
 
 Two Chromium flags were measured and are kept. Most make no difference at all
 (`--disable-gpu`, `--renderer-process-limit`, the extension/networking/feature
 switches: 610 MB → 608 MB), so they are not claimed as a fix.
 `--js-flags=--max-old-space-size=192` does help — 749 MB → 694 MB over a heavy
-pass — and 128 was not better, so 192 is what is set. The suite is now stable
-with no `oom_kill` at all across full runs.
+pass — and 128 was not better, so 192 is what is set. With the threshold and the
+interval tightened, the suite completes with no `oom_kill` at all.
 
 **The other half of the budget was the Convex backend**, at 871 MB. Its local
 SQLite store had grown to **425 MB**, because every reset leaves MVCC garbage
@@ -338,7 +398,7 @@ is `__convex` rather than `convex` because the repository has a real `convex/`
 directory that Vite serves as `/convex/_generated/api.js`; proxying that name
 hands the app's own modules to the backend and blanks the page.
 
-Both origins now pass all 232 checks.
+Both origins now pass all 248 checks.
 
 ### 4. A historical bank passbook showed the wrong year, and was slow
 
@@ -429,8 +489,8 @@ that cannot fail is not a test.
 
 `bun run visual:ui` (30 assertions) is a third, separate suite. The other two
 drive a desktop viewport, which is precisely why a console with **no navigation
-at all below the `lg` breakpoint** could pass 232 console assertions, 71 portal
-assertions, 34 smoke checks and 88 security checks. The sidebar is
+at all below the `lg` breakpoint** could pass 248 console assertions, 71 portal
+assertions, 37 smoke checks and 103 security checks. The sidebar is
 `hidden lg:flex`; the phone header carried the logo, the theme toggle and a
 sign-out button. A treasurer on a phone could open the app, see the dashboard,
 and reach none of the other twelve routes. Nothing failed, because the app was

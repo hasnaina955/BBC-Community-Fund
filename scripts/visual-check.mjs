@@ -32,6 +32,7 @@ import { chromium } from "playwright"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { execSync } from "node:child_process"
+import { runRemindersGroup } from "./visual-reminders.mjs"
 
 const BASE = process.env.PREVIEW_URL ?? "http://127.0.0.1:5173"
 const CONVEX = process.env.CONVEX_URL ?? "http://127.0.0.1:3210"
@@ -72,7 +73,7 @@ let currentGroup = "general"
  * the checks after it suspect, because a fresh browser is exactly as valid a
  * starting point as the one it replaces.
  */
-const RECYCLE_EVERY = 4
+const RECYCLE_EVERY = 3
 let groupsSinceRecycle = 0
 
 /**
@@ -118,8 +119,15 @@ function browserRssMb() {
  * recover from. A fresh browser is 472 MB, so 500 allows roughly one screen's
  * growth before recycling: frequent, a few seconds each, and it keeps the
  * browser near its floor so the backend has room to grow into.
+ *
+ * Lowered from 500 to 440 after a run where the backend was OOM-killed anyway
+ * (`oom_kill 1` in the cgroup's own counters) with the browser sitting at 586 MB
+ * at the moment it recycled. The problem is the *peak between* recycles, not the
+ * value at a group boundary, and a fresh browser is 472 MB — so a threshold
+ * under that is not "recycle on schedule" but "recycle on arrival", which is
+ * exactly the intent and costs one extra relaunch.
  */
-const RECYCLE_ABOVE_MB = 500
+const RECYCLE_ABOVE_MB = 440
 
 /**
  * Set by `group()` when a recycle is due, and collected by the next page call.
@@ -904,6 +912,26 @@ async function shot(name) {
   return file
 }
 
+/**
+ * What a failed `quietSince` should say.
+ *
+ * A noise assertion that fails with no detail is the least useful line in the
+ * report: the reader knows something was logged and has to go and find it. This
+ * prints the first few entries for the screen being asserted, which is the part
+ * that matters, capped so a runaway loop cannot bury the run in its own output.
+ */
+function noiseReport(mark) {
+  const rows = []
+  for (const key of ["pageerror", "console", "failed", "http"]) {
+    for (const entry of noise[key].slice(mark[key])) {
+      if (entry.screen !== currentLabel) continue
+      rows.push(`${key}: ${entry.text ?? entry.url ?? JSON.stringify(entry)}`)
+    }
+  }
+  if (rows.length === 0) return "no entries for this screen"
+  return rows.slice(0, 3).join(" | ").slice(0, 240)
+}
+
 function newNoise() {
   return {
     console: noise.console.length,
@@ -1080,6 +1108,11 @@ const ROUTES = [
     expect: ["Collection", "Sessions", "Online collection is not available yet"],
   },
   { slug: "10-transactions", url: "/transactions", expect: ["Transactions"] },
+  {
+    slug: "09c-reminders",
+    url: "/reminders",
+    expect: ["Reminders", "Outstanding", "Ageing", "No message provider is connected yet"],
+  },
   { slug: "11-approvals", url: "/approvals", expect: ["Pending Approvals"] },
   { slug: "07-banks", url: "/banks", expect: ["Banks", "Passbook"] },
   { slug: "12-reports", url: "/reports", expect: ["Reports", "Financial position"] },
@@ -1442,6 +1475,25 @@ group("members — passbook and its skip path")
 }
 
 /* ------------------------------------------------- the collection desk */
+
+// M5 lives in its own file — `scripts/visual-check.mjs` is past the point where
+// the file tool can still see its own tail, and a group that cannot be corrected
+// afterwards is a poor place to keep the checks that say the product works.
+await runRemindersGroup({
+  page,
+  group,
+  check,
+  settle,
+  shot,
+  newNoise,
+  quietSince,
+  noiseReport,
+  has,
+  mainText,
+  bodyText,
+  BASE,
+})
+
 
 /*
  * M4a. A dated session of cash at a meeting, with a running total.

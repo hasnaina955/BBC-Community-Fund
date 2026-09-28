@@ -22,7 +22,7 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **M2d** | Reconciliation and close | M2a | **Done** | Balances reconcile with the bank |
 | **M3** | Member portal | M2 | **Done** | A member is self-sufficient |
 | **M4** | Online collection | M2, M3 | Half done — the offline half and the provider seam are built; the gateway half is blocked on the committee | A member can pay from a link |
-| **M5** | Reminders and arrears | M4a | Not started | Unpaid contributions get chased |
+| **M5** | Reminders and arrears | M4a | Built, unsent — the decision layer, the record and the consent rules are done; dispatch waits on a vendor | Unpaid contributions get chased |
 | **M6** | Multi-tenancy | M2 | Not started | Two orgs, no data crossover |
 | **M7** | Reports and compliance | M2 | Not started | The committee gets its answer |
 | **M8** | Hardening and operations | M3–M7 | Not started | It can be relied on |
@@ -479,20 +479,66 @@ needs a staging deployment, not a sandbox.
 
 ### Scope
 
-- [ ] Knock integration for email, SMS, and WhatsApp
-- [ ] Reminder templates: due-soon, overdue, arrears summary
-- [ ] Scheduled monthly run for the whole org
-- [ ] One-tap "remind all unpaid" from the grid
-- [ ] Defaulter list with aging, sortable and exportable
-- [ ] Opt-out preferences and consent capture
-- [ ] Delivery status and bounce handling
-- [ ] Per-member reminder history
+- [x] Knock integration for email, SMS, and WhatsApp — **seam only, no vendor**
+- [x] Reminder templates: due-soon, overdue, arrears summary
+- [x] Scheduled monthly run for the whole org
+- [x] One-tap "remind all unpaid" from the grid
+- [x] Defaulter list with aging, sortable
+- [x] Opt-out preferences and consent capture
+- [~] Delivery status and bounce handling — the log and the event shape exist
+- [x] Per-member reminder history
 
 ### Exit criteria
 
-- An unpaid contribution produces a reminder on schedule
+- An unpaid contribution produces a reminder on schedule — the decision layer
+  and the cron are built; nothing is dispatched until a provider is configured
 - The treasurer sees who has been reminded and when
 - A member can stop being reminded
+
+### What was built, and the split that shapes it
+
+The same split M4 made: the desk is provider-independent, the transport is a
+seam. `convex/lib/notify.ts` holds the provider interface, the three templates
+and the renderer; its only implementation is an offline stub, so the UI is
+honest about the fact that nothing has been sent and cannot offer a button that
+would lie. A real vendor changes one file and nothing else.
+
+**A run is a record, not a loop.** `reminders:runCampaign` writes a
+`reminderCampaigns` row holding the members it considered, the ones it queued,
+and the ones it skipped *with the reason* — `opted_out`, `no_destination`,
+`already_reminded`. That is what makes "you reminded 61 people" an answerable
+question afterwards, and it is why the campaign is a row rather than a loop. The
+monthly cron and the treasurer's button call the same builder, so the two cannot
+drift apart.
+
+Scheduled runs are idempotent per (org, kind, period), because a monthly cron
+that fires twice must not chase the same people twice. A manual run is
+deliberately not: a treasurer who presses the button twice has asked twice, and
+silently ignoring the second press is its own bug.
+
+### The consent asymmetry, which is the part worth arguing about
+
+`setPreference` uses `requireMember`, not `requireTreasurer`, and the target is
+always the row belonging to the signed-in account. Consent is the one thing in
+this codebase a console user cannot grant on anybody's behalf — a treasurer
+"just turning it off for them" is exactly the case that would be indefensible
+later. A treasurer *can* record a refusal made in person, because a member who
+asks to be left alone does not always have an account. Turning something off
+needs the person; turning it on does not. `myPreferences` is session-scoped in
+the same way as the rest of the portal, so it is not possible to ask it about
+somebody else by passing a different id.
+
+### Still open
+
+- **The vendor.** Knock (via Gravity) is the recommendation: three channels on
+  one integration, a Node client, per-recipient delivery status and bounce
+  webhooks. It is a paid account and nothing is wired, by design.
+- **The cron needs a hosted deployment.** `reminders:runScheduled` is an
+  `internalMutation`, callable only from a scheduler, so the monthly run cannot
+  fire against the local backend. It is covered by the same blocker as the M4b
+  gateway: a real Convex deployment.
+- **Export** of the defaulter list (CSV) is not built; the list is sortable and
+  the arrears read model behind it is already one query.
 
 ---
 

@@ -5,6 +5,7 @@ import { useAuthActions } from "@convex-dev/auth/react"
 import { api } from "../../../convex/_generated/api"
 import {
   Banknote,
+  BellRing,
   Building2,
   CalendarDays,
   CheckCircle2,
@@ -47,6 +48,7 @@ const NAV = [
   { to: "/members", label: "Members", icon: Users },
   { to: "/contributions", label: "Contributions", icon: Banknote },
   { to: "/collection", label: "Collection", icon: CalendarDays },
+  { to: "/reminders", label: "Reminders", icon: BellRing },
   { to: "/transactions", label: "Transactions", icon: Wallet },
   { to: "/approvals", label: "Approvals", icon: ListChecks, badge: "pending" },
   { to: "/payment-requests", label: "Claimed payments", icon: HandCoins, badge: "requests" },

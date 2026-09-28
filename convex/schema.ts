@@ -590,4 +590,111 @@ export default defineSchema({
     .index("by_payout", ["orgId", "provider", "providerPayoutId"])
     .index("by_bank_date", ["orgId", "bankId", "settledOn"])
     .index("by_org", ["orgId"]),
+
+  /* ----------------------------------------------------------------- M5 —
+   * Reminders. The schema lands before the provider does, for the same reason
+   * `gatewayIntents` does: a treasury's reminder run is a *decision* and a
+   * *record*, and only the last mile is somebody else's API. Deciding who to
+   * chase, and proving afterwards that we did chase them, must not be
+   * re-argued when a vendor is finally picked.
+   */
+
+  // What a member has agreed to receive, and on which channel.
+  //
+  // A row is *opt-out*: absent means "nothing has been agreed", which is
+  // different from "agreed to everything" and is treated as consent for the
+  // channels a treasurer is chasing people about — a member who has asked for
+  // nothing and a member who has asked for everything are both chaseable, and
+  // only an explicit refusal is not. Consent is recorded as a timestamp rather
+  // than a boolean because "when did they agree" is the question a complaint
+  // is actually about.
+  notificationPreferences: defineTable({
+    orgId: v.id("organizations"),
+    memberId: v.id("members"),
+    email: v.optional(v.boolean()),
+    sms: v.optional(v.boolean()),
+    whatsapp: v.optional(v.boolean()),
+    /** ISO timestamp of the agreement or refusal being recorded. */
+    decidedAt: v.number(),
+    updatedBy: v.optional(v.id("users")),
+  })
+    .index("by_org", ["orgId"])
+    .index("by_member", ["orgId", "memberId"]),
+
+  // One treasury decision: who we are chasing, for what, on what day.
+  //
+  // The campaign is the unit of intent. Without it, a reminder is a row with a
+  // member on it and no answer to "did we already do this to them?", and
+  // re-running the job sends the same message twice. `by_org_period` is the
+  // replay key: one scheduled campaign per org per ISO period per template.
+  reminderCampaigns: defineTable({
+    orgId: v.id("organizations"),
+    kind: v.union(
+      v.literal("due_soon"),
+      v.literal("overdue"),
+      v.literal("arrears_summary"),
+    ),
+    /** ISO date the run was for. The scheduled job is keyed on this. */
+    period: v.string(),
+    /** `scheduled` came from the cron; `manual` a treasurer pressed the button. */
+    trigger: v.union(v.literal("scheduled"), v.literal("manual")),
+    requestedBy: v.optional(v.id("users")),
+    /** Members the run considered, and members it actually queued. */
+    considered: v.number(),
+    queued: v.number(),
+    /** Members skipped because they opted out, or have nowhere to be reached. */
+    skippedOptOut: v.number(),
+    skippedUnreachable: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_org", ["orgId"])
+    .index("by_org_period", ["orgId", "kind", "period"])
+    .index("by_org_created", ["orgId", "createdAt"]),
+
+  // One message, to one member, from one campaign.
+  //
+  // `reminderId` is the *provider's* id and is the replay key for delivery
+  // events: providers redeliver webhooks, and a status update that inserts a
+  // second row turns a delivered message into an apparent duplicate chase.
+  reminders: defineTable({
+    orgId: v.id("organizations"),
+    campaignId: v.id("reminderCampaigns"),
+    memberId: v.id("members"),
+    fundId: v.optional(v.id("funds")),
+    kind: v.union(
+      v.literal("due_soon"),
+      v.literal("overdue"),
+      v.literal("arrears_summary"),
+    ),
+    channel: v.union(v.literal("email"), v.literal("sms"), v.literal("whatsapp")),
+    /** Where it was sent. Kept so a bounced address is visible, not re-derived. */
+    destination: v.string(),
+    /** The subject as rendered, and the body. Rendered server-side, once. */
+    subject: v.string(),
+    body: v.string(),
+    /** Paise this reminder is about, so a chase can be tied to money. */
+    amountPaise: money,
+    /** How many months it covers, which is what "3 months behind" means. */
+    months: v.number(),
+    status: v.union(
+      v.literal("queued"),
+      v.literal("sent"),
+      v.literal("delivered"),
+      v.literal("failed"),
+      v.literal("skipped"),
+    ),
+    /** The provider's own id, once we have one. Also the webhook replay key. */
+    reminderId: v.optional(v.string()),
+    failureReason: v.optional(v.string()),
+    sentAt: v.optional(v.number()),
+    deliveredAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_campaign", ["orgId", "campaignId"])
+    .index("by_member", ["orgId", "memberId"])
+    .index("by_org_created", ["orgId", "createdAt"])
+    .index("by_replay", ["orgId", "reminderId"])
+    // "Who has already been reminded this month?" is asked on every row of the
+    // defaulter list, so it cannot afford to scan the table.
+    .index("by_member_kind_period", ["orgId", "memberId", "kind", "createdAt"]),
 })
