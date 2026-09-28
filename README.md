@@ -38,6 +38,7 @@ CommunityFund is the tool a treasurer uses to:
 - Require approval before a transaction affects a balance
 - Mark monthly contributions paid or unpaid on a year grid
 - See collection progress, defaults, and monthly cash flow
+- Chase defaulters from a list sorted by how long they have owed, and see who has already been reminded
 - Hand the committee a report
 
 And the tool a member uses to:
@@ -67,10 +68,10 @@ destinations, and the two are gated separately on the server.
 | Reconciliation and FY close | **Done (M2d)** — statements vs. the books on the statement's date; a closed year locks its entries |
 | Member portal | **Done (M3)** — what I owe, a printable passbook, receipts, mark-as-paid, installable |
 | Collection desk | **Done (M4a)** — cash sessions, receipts, and the provider seam; online collection still deferred |
-| Verified in a browser | **Done** — 232 console checks + 71 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
+| Reminders and arrears | **Built, unsent (M5)** — the defaulter list with ageing, the run that is recorded rather than looped, and the consent rules; the send is a seam with no vendor behind it |
+| Verified in a browser | **Done** — 248 console checks + 71 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
 | Data | **Done (M1)** — seeded: 1 org, 7 staff, 3 banks, 6 funds, 84 members |
 | Online collection | **Blocked on the committee** — M4's provider half needs four answers before it can be built ([docs/M4-PLAN.md](docs/M4-PLAN.md)) |
-| Reminders and arrears chasing | M5 |
 
 ## Running it
 
@@ -79,8 +80,8 @@ bun install
 bun run dev        # Convex backend + Vite together, http://localhost:5173
 bun run typecheck  # tsc -b --noEmit, app + convex
 bun run build      # typecheck + production build into dist/
-bun run check      # 88 assertions: authz, the mode rule, the balance invariant, the receipt sequence
-bun run smoke      # all 34 read models return against the seeded data
+bun run check      # 103 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions
+bun run smoke      # all 37 read models return against the seeded data
 bun run measure    # payload per screen, against history
 bun run visual     # every console screen in a real browser, against real data
 bun run visual:portal  # the member portal, on a phone-sized viewport
@@ -149,7 +150,7 @@ handles its volume:
 ```bash
 bun run seed:history   # 2018 → last year, one year per call
 bun run check          # every materialised balance equals the sum of its entries
-bun run smoke          # all 34 read models return a result
+bun run smoke          # all 37 read models return a result
 bun run measure        # what each screen actually downloads
 bun run visual         # every screen renders, and the numbers are the server's
 ```
@@ -226,11 +227,14 @@ Start here, then go deeper:
 │   ├── aggregate.ts           # every dashboard and report figure
 │   ├── balances.ts            # verify / recompute the balance invariant
 │   ├── funds.ts  members.ts  transactions.ts  collections.ts
+│   ├── reminders.ts           # who to chase, and the run that records it
 │   ├── gateway.ts            # online-payment exceptions surface (empty by design)
 │   ├── seed.ts                # demo seeder + guarded reset + history
 │   └── lib/                   # authz, audit, ledger, balances, funds, money,
 │                              # collection (the only writer of money), sequence,
-│                              # payments (the gateway provider seam)
+│                              # payments (the gateway provider seam),
+│                              # notify (the messaging provider seam),
+│                              # reminders (who to chase, and who not)
 ├── scripts/                   # dev runner, seed drivers, smoke + measure
 ├── legacy/                    # the ONLY copy of the original build — read-only
 │   ├── index.html
@@ -254,8 +258,9 @@ history, a fund model that knows the difference between money members owe and
 money they choose to give, and reconciliation that checks the books against the
 bank. M3 turns that around to face the member: a portal where a person can see
 what they owe, print a passbook, and claim a cash payment they already made. Then
-the product grows outward: actual online collection (M4), automated reminders
-that chase unpaid contributions (M5), multi-tenancy so more than one community can
+the product grows outward: actual online collection (M4), the chasing side of it
+— the defaulter list, the run that records who was chased, and the consent rules
+(M5) — multi-tenancy so more than one community can
 use it (M6), reporting and compliance (M7), and finally operational hardening
 (M8).
 
