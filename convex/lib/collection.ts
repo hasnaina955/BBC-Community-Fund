@@ -5,6 +5,7 @@ import { assertCanWriteFund } from "./authz"
 import { recordAudit, AUDIT } from "./audit"
 import { assertPositive } from "./money"
 import { postEntry } from "./ledger"
+import { nextReceiptNo } from "./sequence"
 import { hasDues } from "./funds"
 
 /**
@@ -91,12 +92,12 @@ export async function recordPaymentFor(
 
   const paidAt = args.paidAt ?? new Date().toISOString()
 
-  // Receipt numbers are sequential per organisation.
-  const recent = await ctx.db
-    .query("payments")
-    .withIndex("by_org", (q) => q.eq("orgId", actor.orgId))
-    .collect()
-  const receiptNo = `R-${String(recent.length + 1).padStart(5, "0")}`
+  // Receipt numbers come from a real counter, not from a count of rows. See
+  // lib/sequence.ts: the old derivation was a full-table scan on this write path
+  // that would have failed outright at twice the seeded history, and `count + 1`
+  // hands the same number to two payments recorded at the same moment — which is
+  // exactly what happens when a treasurer records a collection round.
+  const receiptNo = await nextReceiptNo(ctx, actor.orgId)
 
   const paymentId = await ctx.db.insert("payments", {
     orgId: actor.orgId,

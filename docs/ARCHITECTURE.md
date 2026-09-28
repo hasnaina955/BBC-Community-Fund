@@ -681,38 +681,96 @@ Rules:
 
 ## Module map
 
+The layout below is what the repository actually contains. (An earlier version
+of this section described a planned `queries/`, `mutations/`, `actions/` and
+`httpActions/` tree and named Stripe; the app is flatter than that, and the
+gateway is not chosen.)
+
 ```
+convex/
+├── schema.ts              tables + indexes
+├── auth.ts  auth.config.ts
+├── aggregate.ts           every dashboard and report figure, server-side
+├── data.ts                the M1 row reads, kept so they can be measured
+├── funds.ts  members.ts  transactions.ts  banks.ts  approvals.ts
+├── collections.ts         the collection desk: sessions, and the round payment
+├── portal.ts              the member's own record
+├── receipts.ts            printable documents, as queries
+├── reconciliation.ts      statements, differences, fiscal-year close
+├── gateway.ts             online-payment exceptions — empty by design
+├── seed.ts                demo seeder, guarded reset, history back-fill
+└── lib/
+    ├── authz.ts           requireActor / requireConsole / requireTreasurer
+    ├── money.ts           paise <-> display, parsing
+    ├── audit.ts           record(...) on every mutation
+    ├── ledger.ts          the only writer of ledger_entries
+    ├── balances.ts        materialised balances, verify/recompute
+    ├── collection.ts      the only writer of payments
+    ├── sequence.ts        receipt numbers
+    ├── payments.ts        the gateway provider seam
+    ├── arrears.ts         due dates, days past due, ageing buckets
+    └── funds.ts           the collectionMode rules
 src/
-├── convex/
-│   ├── schema.ts              tables + indexes
-│   ├── auth.ts                Convex Auth config
-│   ├── lib/
-│   │   ├── authz.ts           requireUser / requireAdmin / requireOrg
-│   │   ├── money.ts           paise <-> display, parsing
-│   │   ├── audit.ts           record(...) on every mutation
-│   │   ├── ledger.ts          the only writer of ledger_entries
-│   │   ├── balances.ts        materialised balances, verify/recompute
-│   │   ├── arrears.ts         due dates, days past due, ageing buckets
-│   │   └── funds.ts           the collectionMode rules
-│   ├── reconciliation.ts       statements, differences, fiscal-year close
-│   ├── queries/               balances, grid, arrears, dashboard, reports
-│   ├── mutations/             funds, banks, members, contributions, payments,
-│   │                          transactions, approvals, reconciliation, users
-│   ├── actions/               receipts, reminders, payment links, exports
-│   └── httpActions/           stripe webhook, auth callbacks
-├── src/
-│   ├── routes/
-│   │   ├── public/            landing
-│   │   ├── auth/              sign in / sign up
-│   │   ├── console/           committee app (the 10 recovered screens)
-│   │   └── portal/            member portal
-│   ├── components/            shadcn + recovered design system
-│   └── lib/
+├── routes/                the console screens, the member portal, /auth
+├── components/            shadcn + recovered design system
+└── lib/                   types, money, formatting, the Convex client
 ```
 
-**`lib/ledger.ts` is the only module permitted to write a `ledger_entry`.**
-Every balance-affecting path goes through it. This is what keeps the invariant
-in "The ledger" true by construction rather than by review.
+**`lib/ledger.ts` is the only module permitted to write a `ledger_entry`**, and
+`lib/collection.ts` the only one permitted to write a `payment`. Every
+balance-affecting path goes through them. This is what keeps the invariant in "The
+ledger" true by construction rather than by review.
+
+---
+
+## The collection desk, and the seam a gateway goes behind
+
+The collection desk is the screen a treasurer actually uses at a meeting: open a
+session for today's date and fund, then enter cash and cheque receipts one after
+another against a running total, with no signal and no per-entry confirmation
+dialog. `/collection`.
+
+It is deliberately built as if a gateway already existed:
+
+- `convex/lib/payments.ts` declares a `PaymentsProvider` — create an intent,
+  confirm a payment, look one up by provider id — and selects an implementation.
+  The only implementation today is local, and it refuses. Adding Razorpay means
+  writing one file against that interface, not touching the money path.
+- `convex/schema.ts` already carries `gatewayIntents`, `gatewayEvents` and
+  `settlements`, with the indexes a webhook needs (`by_provider_ref`,
+  `by_event_id`). They are reset with the rest of the demo data, so the tables
+  are exercised even while empty.
+- `convex/gateway.ts` is the exceptions surface — a payment the gateway says
+  succeeded that the books do not have, a refund nobody recorded, a settlement
+  that does not tie. **Shipped empty on purpose.** A schema for a problem the
+  system does not yet have is a guess; the tables above are the guess, and they
+  are cheap to be wrong about.
+
+What the desk gave us, which a gateway would have needed anyway:
+
+**Receipt numbers needed to be a real sequence.** They were `count + 1`, which is
+not a sequence. Two payments written in the same instant — exactly what a
+collection desk does, and exactly what a webhook burst does — computed the same
+number. And the count itself was a full-table scan of the `payments` table, at
+~9,955 rows, past the server's per-query limits. `lib/sequence.ts` holds the
+counter in an org-scoped `counters` document, incremented inside the same
+transaction that writes the payment, so a receipt number is unique by
+construction and a duplicate webhook replays the same number rather than minting
+a new one.
+
+**The exception the count scan would have become is a real one.** The 16,384-row
+and 8,192-return limits are now worked around in `balances.ts`, `aggregate.ts`,
+`lib/sequence.ts` and the schema itself, each with a comment naming which limit
+and why. That is not an accident of the data volume; it is the shape a naive read
+takes against an append-only ledger, and every read model here is shaped to
+avoid it. `rounds` is a worked example: it makes **one** index scan for the
+payments of all forty sessions in view, not one scan per session, because a
+collection desk is opened in a hurry.
+
+**Idempotency was already testable without a gateway.** `recordPaymentFor` keys
+on `idempotencyKey` through the `by_idempotency` index and returns the payment it
+already wrote. A webhook is only another caller, so the replay guarantee it will
+depend on is now asserted in `bun run check` rather than assumed until M4b.
 
 ---
 

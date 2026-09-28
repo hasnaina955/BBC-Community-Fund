@@ -65,8 +65,20 @@ const cases = [
   ["aggregate:reports", { year: shell.value.yearRange.from }],
   ["aggregate:grid", { year }],
   ["aggregate:grid", { year: shell.value.yearRange.from }],
+  ["reconciliation:status", {}],
+  ["collections:rounds", {}],
+  ["collections:roundMembers", {}],
   ["balances:verify", {}],
 ]
+
+// The open-session read model needs a session to open. The desk's own
+// assertions create some, but a smoke run against a fresh seed has none, so this
+// is added only when one exists rather than reported as a failure.
+const rounds = await call("collections:rounds", {}, token)
+const firstRoundId = rounds.value?.rounds?.[0]?.id
+if (firstRoundId) {
+  cases.push([`collections:round (${rounds.value.rounds[0].label})`, { id: firstRoundId }])
+}
 
 for (const fund of funds.value) {
   cases.push([`aggregate:fundDetail (${fund.name})`, { fundId: fund.id }])

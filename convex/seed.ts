@@ -21,12 +21,17 @@ import { truthFromEntries } from "./lib/balances"
  *
  * The order matters: an entry references a payment, a payment references a
  * member, and so on. The driver in `scripts/reset-demo.mjs` walks this list.
- */  const RESET_ORDER = [
+ */
+const RESET_ORDER = [
   "auditLog",
   "reconciliations",
+  "settlements",
+  "gatewayEvents",
+  "gatewayIntents",
   "balances",
   "ledgerEntries",
   "payments",
+  "counters",
   "contributions",
   "pledges",
   "collectionRounds",
@@ -849,6 +854,22 @@ export const seedDemo = mutation({
       })
     }
 
+    /*
+     * Park the receipt counter above every receipt this seed just issued.
+     *
+     * Without this the first payment a treasurer records would lazily scan all
+     * ~10,000 seeded payments to work out where the sequence left off — and at
+     * twice that history the scan would exceed Convex's 16,384-document query cap
+     * and the most important write in the app would fail. `seedHistory` seeds
+     * six-digit receipt numbers and overwrites this, since it runs second.
+     */
+    await ctx.db.insert("counters", {
+      orgId,
+      scope: "receipt",
+      value: paymentSeq,
+      updatedAt: now,
+    })
+
     return {
       orgId,
       users: staffSpecs.length,
@@ -860,6 +881,7 @@ export const seedDemo = mutation({
       fridayRounds,
       anonymousGifts,
       monthlyDues: MONTHLY_DUES_PAISE / 100,
+      receiptsIssued: paymentSeq,
       demoPassword: DEMO_PASSWORD,
       signInAs: staffSpecs[0].email,
     }
@@ -1258,6 +1280,32 @@ export const seedHistory = mutation({
       })
     }
 
+    /*
+     * `seedHistory` runs after `seedDemo` and issues far higher receipt numbers
+     * (six digits, not five), so the counter it leaves behind is the one that
+     * matters. Patch rather than insert: `seedDemo` already put a row here.
+     */
+    const existingCounter = await ctx.db
+      .query("counters")
+      .withIndex("by_org_scope", (q) =>
+        q.eq("orgId", orgId).eq("scope", "receipt"),
+      )
+      .first()
+
+    if (existingCounter) {
+      await ctx.db.patch(existingCounter._id, {
+        value: Math.max(existingCounter.value, txnSeq),
+        updatedAt: now,
+      })
+    } else {
+      await ctx.db.insert("counters", {
+        orgId,
+        scope: "receipt",
+        value: txnSeq,
+        updatedAt: now,
+      })
+    }
+
     return {
       orgId,
       year: target,
@@ -1268,6 +1316,7 @@ export const seedHistory = mutation({
       ledgerEntriesAdded: ledger,
       fridayRounds: rounds,
       balances: running.size,
+      receiptsIssued: txnSeq,
     }
   },
 })

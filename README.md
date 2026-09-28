@@ -56,7 +56,7 @@ destinations, and the two are gated separately on the server.
 
 | Area | State |
 | --- | --- |
-| Source code | **Done (M0)** — Vite + React + TS, 10 routes, all compiling |
+| Source code | **Done (M0)** — Vite + React + TS, 14 console screens + 5 portal screens, all compiling |
 | Design system | **Done (M0)** — light + dark tokens recovered from the legacy CSS |
 | Domain model | **Done (M0/M2c)** — v2 schema in Convex, incl. `collectionMode` |
 | Backend / API | **Done (M1)** — queries, mutations, ledger writer, audited |
@@ -66,9 +66,11 @@ destinations, and the two are gated separately on the server.
 | Collection modes | **Done (M2c)** — arrears only where a due actually exists |
 | Reconciliation and FY close | **Done (M2d)** — statements vs. the books on the statement's date; a closed year locks its entries |
 | Member portal | **Done (M3)** — what I owe, a printable passbook, receipts, mark-as-paid, installable |
-| Verified in a browser | **Done** — 216 console checks + 71 portal checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
+| Collection desk | **Done (M4a)** — cash sessions, receipts, and the provider seam; online collection still deferred |
+| Verified in a browser | **Done** — 232 console checks + 71 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
 | Data | **Done (M1)** — seeded: 1 org, 7 staff, 3 banks, 6 funds, 84 members |
-| Online collection, reminders | M4–M5 |
+| Online collection | **Blocked on the committee** — M4's provider half needs four answers before it can be built ([docs/M4-PLAN.md](docs/M4-PLAN.md)) |
+| Reminders and arrears chasing | M5 |
 
 ## Running it
 
@@ -77,11 +79,13 @@ bun install
 bun run dev        # Convex backend + Vite together, http://localhost:5173
 bun run typecheck  # tsc -b --noEmit, app + convex
 bun run build      # typecheck + production build into dist/
-bun run check      # authz, the mode rule, and the balance invariant
-bun run smoke      # every read model returns against the seeded data
+bun run check      # 88 assertions: authz, the mode rule, the balance invariant, the receipt sequence
+bun run smoke      # all 34 read models return against the seeded data
 bun run measure    # payload per screen, against history
 bun run visual     # every console screen in a real browser, against real data
 bun run visual:portal  # the member portal, on a phone-sized viewport
+bun run visual:ui      # the palette, in both themes, measured for contrast
+bun run visual:recovery # kill the browser mid-run and prove the suite survives
 ```
 
 `bun run dev` starts **both** halves, because the Convex backend only listens
@@ -145,7 +149,7 @@ handles its volume:
 ```bash
 bun run seed:history   # 2018 → last year, one year per call
 bun run check          # every materialised balance equals the sum of its entries
-bun run smoke          # all 30 read models return a result
+bun run smoke          # all 34 read models return a result
 bun run measure        # what each screen actually downloads
 bun run visual         # every screen renders, and the numbers are the server's
 ```
@@ -160,14 +164,18 @@ client-side aggregation, at eight years of history two read models **fail
 outright** rather than merely getting slow:
 
 ```
-data:listLedgerEntries   Array length is too long (10066 > maximum length 8192)
-data:listPayments        Array length is too long ( 9979 > maximum length 8192)
+data:listLedgerEntries   Array length is too long (10051 > maximum length 8192)
+data:listPayments        Array length is too long ( 9964 > maximum length 8192)
 ```
 
 | | Bytes for the whole app, at 8 years |
 | --- | --- |
-| Client-side aggregation (M1) | 1,492,414 — and two queries fail |
-| Server-side read models (M2b) | 180,296 |
+| Client-side aggregation (M1) | 1,503,905 — and two queries fail |
+| Server-side read models (M2b) | 223,452 |
+
+The 43 kB of the difference between that figure and the older 180,296 is the
+collection desk (M4a) plus the sessions it lists. It is the one number here that
+is allowed to grow with history, and it is capped at 40 sessions.
 
 ## Recovered stack
 
@@ -218,8 +226,11 @@ Start here, then go deeper:
 │   ├── aggregate.ts           # every dashboard and report figure
 │   ├── balances.ts            # verify / recompute the balance invariant
 │   ├── funds.ts  members.ts  transactions.ts  collections.ts
+│   ├── gateway.ts            # online-payment exceptions surface (empty by design)
 │   ├── seed.ts                # demo seeder + guarded reset + history
-│   └── lib/                   # authz, audit, ledger, balances, funds, money
+│   └── lib/                   # authz, audit, ledger, balances, funds, money,
+│                              # collection (the only writer of money), sequence,
+│                              # payments (the gateway provider seam)
 ├── scripts/                   # dev runner, seed drivers, smoke + measure
 ├── legacy/                    # the ONLY copy of the original build — read-only
 │   ├── index.html

@@ -56,6 +56,9 @@ const AGGREGATES = [
   ["aggregate:reports", { year: 2026 }, "Reports"],
   ["aggregate:directory", {}, "Users"],
   ["aggregate:audit", { limit: 60 }, "Settings"],
+  ["collections:rounds", {}, "Collection desk"],
+  ["collections:roundMembers", {}, "Collection desk (member picker)"],
+  ["collections:round", { id: "@round" }, "Collection desk (an open session)"],
 ]
 
 /**
@@ -93,6 +96,11 @@ const funds = await call("aggregate:funds", {}, token)
 const banks = await call("aggregate:banks", {}, token)
 const members = await call("aggregate:members", { filter: "all" }, token)
 
+// A collection session, so the desk's open-session read model can be measured.
+// The seeder opens no sessions, so this is null on a fresh seed and the row
+// below degrades to an error line rather than silently reporting zero bytes.
+const rounds = await call("collections:rounds", {}, token)
+
 // The portal has its own session: its read models are scoped to the caller's own
 // member record and refuse a committee token outright.
 const memberSignIn = await call("auth:signIn", {
@@ -112,6 +120,7 @@ const ids = {
   "@fund": funds.value?.[0]?.id,
   "@bank": banks.value?.[0]?.id,
   "@member": members.value?.[0]?.id,
+  "@round": rounds.value?.rounds?.[0]?.id,
   "@payment": memberSummary.value?.receipts?.[0]?.id,
 }
 
@@ -155,7 +164,11 @@ for (const entry of RAW) {
 
 console.log("\n  Read models the app now loads (sum of every screen)\n")
 for (const r of rows.sort((a, b) => b.bytes - a.bytes)) {
-  console.log(`    ${cell(r.bytes)}  ${r.path.padEnd(30)} ${r.screen}`)
+  if (r.error) {
+    console.log(`    ${"FAILED".padStart(9)}  ${r.path.padEnd(30)} ${r.error}`)
+  } else {
+    console.log(`    ${cell(r.bytes)}  ${r.path.padEnd(30)} ${r.screen}`)
+  }
 }
 console.log(rule)
 console.log(`    ${cell(total)}  TOTAL  (${total.toLocaleString()} bytes)\n`)
