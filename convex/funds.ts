@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server"
 import { v } from "convex/values"
 import { requireTreasurer } from "./lib/authz"
+import { isValidVpa } from "../src/lib/upi"
 import { recordAudit, AUDIT } from "./lib/audit"
 import { assertPositive, assertPaise } from "./lib/money"
 import { fundType, collectionMode } from "./schema"
@@ -163,12 +164,31 @@ export const deactivateFund = mutation({
   },
 })
 
+/**
+ * Validate a UPI address on the way in.
+ *
+ * Rejecting here rather than at render time is the point: an invalid VPA stored
+ * on a bank account produces a QR code that scans perfectly and sends the money
+ * nowhere. A treasurer should find out while typing the address, not while a
+ * sign is already printed and stuck to a wall. An empty value clears the field;
+ * an invalid one throws.
+ */
+function normaliseUpiId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed) return undefined
+  if (!isValidVpa(trimmed)) {
+    throw new Error("That does not look like a UPI address")
+  }
+  return trimmed
+}
+
 export const createBank = mutation({
   args: {
     name: v.string(),
     branch: v.optional(v.string()),
     accountNumber: v.optional(v.string()),
     ifscCode: v.optional(v.string()),
+    upiId: v.optional(v.string()),
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -182,6 +202,7 @@ export const createBank = mutation({
       branch: args.branch?.trim() || undefined,
       accountNumber: args.accountNumber?.trim() || undefined,
       ifscCode: args.ifscCode?.trim().toUpperCase() || undefined,
+      upiId: normaliseUpiId(args.upiId),
       notes: args.notes?.trim() || undefined,
       createdAt: Date.now(),
     })
@@ -204,6 +225,7 @@ export const updateBank = mutation({
     branch: v.optional(v.string()),
     accountNumber: v.optional(v.string()),
     ifscCode: v.optional(v.string()),
+    upiId: v.optional(v.string()),
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -223,6 +245,9 @@ export const updateBank = mutation({
     if (args.accountNumber !== undefined) patch.accountNumber = args.accountNumber || undefined
     if (args.ifscCode !== undefined) {
       patch.ifscCode = args.ifscCode?.trim().toUpperCase() || undefined
+    }
+    if (args.upiId !== undefined) {
+      patch.upiId = normaliseUpiId(args.upiId)
     }
     if (args.notes !== undefined) patch.notes = args.notes || undefined
 

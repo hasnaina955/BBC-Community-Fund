@@ -850,6 +850,99 @@ group("mark-as-paid — claim, queue, decision, and the books unchanged")
   await ctx.close()
 }
 
+/* --------------------------------------------------------- how to pay ---- */
+
+group("how to pay — the account, the QR, and telling the treasurer")
+{
+  /*
+   * The portal's answer to "where do I send it?".
+   *
+   * This is what replaced the payment gateway the committee declined: not a
+   * checkout, but a printed instruction. A member scans, pays from their own
+   * UPI app, and then tells the treasurer. So the assertions are about that
+   * shape rather than about a payment flow — in particular that the screen does
+   * not pretend to take money, and that it says out loud what happens next.
+   *
+   * A member who paid and told nobody is a contribution that is never recorded,
+   * and the whole value of this system is that its books are right. So the
+   * instruction to report the payment is asserted, not assumed.
+   */
+  const { ctx, page } = await portalSession("imran@example.org")
+  const jwt = await sessionToken(page)
+
+  await page.goto(`${BASE}/me`, { waitUntil: "domcontentloaded" })
+  await settle(page, "portal:home")
+  const home = await mainText(page)
+  check(
+    "a member who owes something is told how to pay, on the balance screen",
+    home.includes("How to pay"),
+    home.split("\n").slice(0, 3).join(" / "),
+  )
+  check(
+    "and it names the QR, because most members will scan rather than read",
+    home.toLowerCase().includes("upi qr"),
+  )
+
+  await page.goto(`${BASE}/me/pay`, { waitUntil: "domcontentloaded" })
+  await settle(page, "portal:pay")
+  const pay = await mainText(page)
+
+  const details = await convexCall("portal:paymentDetails", {}, jwt)
+  const account = details.value?.accounts?.[0]
+  check(
+    "the pay screen shows a real account for the member's own fund",
+    Boolean(account) && pay.includes(account.name),
+    account ? account.name : "the server returned no account",
+  )
+  check(
+    "with the UPI address written out, for a member who cannot scan",
+    Boolean(account?.upiId) && pay.includes(account.upiId),
+    account?.upiId ?? "no UPI address on the account",
+  )
+  check(
+    "the QR code is on the page",
+    (await page.getByTestId("portal-pay-qr").count()) >= 1,
+  )
+  check(
+    "and it carries no amount, because the app does not know what is owed",
+    await page.getByTestId("portal-pay-qr").first().evaluate((el) => {
+      const uri = el.getAttribute("data-upi-uri") ?? ""
+      return uri.startsWith("upi://pay?pa=") && !/[?&](am|tr)=/.test(uri)
+    }),
+    "an amount on the QR would imply a checkout the app does not have",
+  )
+  check(
+    "there is no Pay now button anywhere on it",
+    !/pay now|pay ₹|pay now/i.test(pay) &&
+      (await page.getByRole("button", { name: /^Pay now$/i }).count()) === 0,
+  )
+  check(
+    "and it says plainly that the treasurer has to be told",
+    pay.includes("tell the treasurer") || pay.includes("Tell the treasurer"),
+  )
+  check(
+    "with a route into the claim, which is how a payment gets recorded",
+    has(pay, "I have already paid") &&
+      (await page.getByRole("link", { name: /I have already paid/i }).count()) === 1,
+  )
+  check(
+    "and the print button, because this is the sheet that goes on a wall",
+    (await page.getByTestId("portal-pay-print").count()) >= 1,
+  )
+  await shot(page, "29-portal-pay")
+
+  // The screen is reachable from the claim too — that is the order a member
+  // actually arrives in: they have already paid, and now need the reference.
+  await page.goto(`${BASE}/me/requests`, { waitUntil: "domcontentloaded" })
+  await settle(page, "portal:requests")
+  check(
+    "a member who has already paid can find the account from the claim form",
+    has(await mainText(page), "Bank details and UPI QR"),
+  )
+
+  await ctx.close()
+}
+
 /* ------------------------------------------------------- installable shell */
 
 group("installable — the portal is a PWA")

@@ -984,6 +984,7 @@ function modsFor(list, fn) {
 const MEMBER_PASSBOOK = "aggregate:memberPassbook"
 const BANK_PASSBOOK = "aggregate:bankPassbook"
 
+
 /* ------------------------------------------------------------- sign in */
 
 async function signIn(email) {
@@ -1105,7 +1106,7 @@ const ROUTES = [
   {
     slug: "09b-collection",
     url: "/collection",
-    expect: ["Collection", "Sessions", "Online collection is not available yet"],
+    expect: ["Collection", "Sessions", "Money arrives by UPI, and is recorded here by hand"],
   },
   { slug: "10-transactions", url: "/transactions", expect: ["Transactions"] },
   {
@@ -1339,6 +1340,170 @@ group("banks — passbook and its skip path")
   }
 }
 
+/* --------------------------------------------------- the static UPI QR code */
+
+group("the UPI QR — drawn locally, and not a checkout")
+{
+  /*
+   * The committee's decision is that this application records money rather than
+   * taking it (docs/M4-PLAN.md §8). What replaces the gateway is a printed
+   * instruction: the account, and a QR the member scans in their own UPI app.
+   *
+   * Three things have to be true of that QR, and none of them is visible in a
+   * screenshot, so they are asserted here rather than eyeballed:
+   *
+   *   1. It is drawn by the browser from a string, and nothing leaves the page.
+   *      The VPA and the IFSC are the address money arrives at; handing them to
+   *      somebody else's QR endpoint to get back a picture would hand over the
+   *      payment account itself.
+   *   2. It actually has ink on it. A blank square scans to nothing and gives a
+   *      member no error, so a canvas that rendered white has to fail.
+   *   3. It carries no amount. A QR with `am=100` on it says the app knows what
+   *      is owed and what was paid. It knows neither — a member who believes it
+   *      does stops telling the treasurer, and the contribution is never
+   *      recorded.
+   */
+
+  const withVpa = banks.find((b) => b.upiId) ?? banks[0]
+  await page.goto(`${BASE}/banks`, { waitUntil: "domcontentloaded" })
+  await settle("/banks")
+
+  // Attached *after* the first load, not before. `group()` may have asked for a
+  // scheduled browser recycle, which is performed by the first page call it sees
+  // — so a listener registered before that would sit on the page being closed
+  // and would record nothing, turning "the VPA went nowhere" into a check that
+  // passes because it was never watching.
+  const seen = []
+  const onRequest = (req) => seen.push(req.url())
+  page.on("request", onRequest)
+
+  // Then a full reload, so the recording window covers a real page load with all
+  // of its document, module and chunk requests. Measuring only an in-app click
+  // would prove nothing: the QR is drawn from a string already in the page, so
+  // the *absence* of traffic there is also the absence of evidence, and a
+  // regression that shipped the VPA to a third party on first paint would sail
+  // through it.
+  await page.goto(`${BASE}/banks`, { waitUntil: "domcontentloaded" })
+  await settle("/banks")
+
+  await page
+    .getByRole("button", { name: new RegExp(escapeRe(withVpa.name)) })
+    .first()
+    .click()
+  await sleep(1800)
+
+  const panel = page.getByTestId("bank-details")
+  check("the account members pay into is on the screen", (await panel.count()) === 1)
+
+  const qr = page.getByTestId("bank-details-qr")
+  check("its QR code is rendered", (await qr.count()) === 1)
+
+  // The canvas is not decorative. Sample it and prove there are both dark and
+  // light pixels: a failed draw, a white rectangle and a solid black one are
+  // all "a canvas exists" and none of them is a scannable code.
+  const pixels = await qr
+    .first()
+    .evaluate((canvas) => {
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return null
+      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      let dark = 0
+      let light = 0
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] < 128) dark += 1
+        else light += 1
+      }
+      return { dark, light, w: canvas.width, h: canvas.height }
+    })
+  check(
+    "the QR has ink on it, so it will actually scan",
+    Boolean(pixels) && pixels.dark > 500 && pixels.light > 500,
+    pixels ? `${pixels.dark} dark / ${pixels.light} light pixels` : "no 2d context",
+  )
+
+  const uri = await qr
+    .first()
+    .evaluate((canvas) => canvas.getAttribute("data-upi-uri") ?? "")
+  check(
+    "and it encodes the account, with no amount and nothing to track",
+    uri.startsWith("upi://pay?pa=") && !/[?&](am|tr)=/.test(uri),
+    uri || "the canvas does not expose what it was given",
+  )
+
+  page.off("request", onRequest)
+
+  /*
+   * The property is not "this page makes no external requests" — it loads
+   * webfonts from a CDN, which is unrelated and fine. The property is that the
+   * account details never leave the browser: the VPA, the account number and
+   * the IFSC are the address money arrives at, and rendering the QR through a
+   * third-party endpoint would hand that address over in exchange for a square
+   * of black dots.
+   *
+   * So this asks the question directly, rather than inferring it from a blanket
+   * ban on off-site traffic that a font CDN would (correctly) trip.
+   */
+  const leaked = seen.filter((url) => {
+    const decoded = decodeURIComponent(url)
+    return (
+      decoded.includes(withVpa.upiId) ||
+      decoded.includes(withVpa.accountNumber) ||
+      decoded.includes(withVpa.ifscCode)
+    )
+  })
+  check(
+    "and it was drawn in the browser, with the account details sent nowhere",
+    leaked.length === 0 && seen.length > 0,
+    seen.length === 0
+      ? "the listener saw no requests at all, so this proves nothing"
+      : leaked.slice(0, 2).join(" | ") ||
+        `${seen.length} requests, none carrying the account`,
+  )
+
+  // The account number is grouped in fours, because a 16-digit number read
+  // aloud to a bank branch is transcribed wrongly by someone.
+  const shown = await page.getByTestId("bank-details-account").textContent()
+  check(
+    "the account number is printed in groups of four",
+    /^\d{4}( \d{4})* ?\d{0,4}$/.test((shown ?? "").trim()) &&
+      (shown ?? "").replace(/\D/g, "").length === withVpa.accountNumber.length,
+    shown ?? "not shown",
+  )
+  check(
+    "the UPI address is printed as well, for a member who cannot scan",
+    (await page.getByTestId("bank-details-vpa").textContent())?.trim() ===
+      withVpa.upiId,
+    withVpa.upiId,
+  )
+  check(
+    "and it says the money is recorded by hand, not received by the app",
+    (await mainText()).includes("Nothing is recorded until the treasurer"),
+  )
+
+  // A mistyped VPA produces a QR that scans cleanly and pays nobody, so the
+  // editor refuses it rather than storing it.
+  await page.getByTestId("edit-bank").click()
+  await sleep(900)
+  const upiInput = page.getByTestId("bank-upi-input")
+  const original = await upiInput.inputValue()
+  await upiInput.fill("not-a-vpa")
+  await page.getByTestId("bank-save").click()
+  await sleep(1800)
+  check(
+    "a mistyped UPI address is refused at the point of entry",
+    (await page.getByTestId("bank-upi-error").count()) === 1 &&
+      (await upiInput.inputValue()) === "not-a-vpa",
+    "the bad address is still in the box, so the treasurer can see and fix it",
+  )
+
+  await upiInput.fill(original)
+  await page.getByTestId("bank-save").click()
+  await sleep(1800)
+  check("a valid one saves and the dialog closes", (await panel.count()) === 1)
+
+  await shot("08-upi-qr")
+}
+
 /* -------------------------------------------------------------- members */
 
 group("members — passbook and its skip path")
@@ -1517,9 +1682,9 @@ group("collection — a session of cash, totalled and receipted")
 
   const listText = await mainText()
   check(
-    "the collection desk says plainly that online collection is not available",
-    has(listText, "Online collection is not available yet") &&
-      has(listText, "No payment provider has been chosen"),
+    "the collection desk says where the money came from and who records it",
+    has(listText, "Money arrives by UPI, and is recorded here by hand") &&
+      has(listText, "Members pay into the account on the Banks screen"),
     listText.replace(/\s+/g, " ").slice(0, 140),
   )
   check(

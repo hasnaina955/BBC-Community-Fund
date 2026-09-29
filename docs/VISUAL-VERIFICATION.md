@@ -6,11 +6,11 @@ numbers on screen against the read model that produced them, and asserts the
 (gitignored). It needs the preview running (`freebuff-preview start`) and a
 seeded deployment.
 
-The latest pass was run on 28 September 2026 against 10,051 ledger entries
-spanning 2018–2026: **263 checks, all passing.** Two defects that made *every*
-screen blank were found this way; neither was visible to `bun run check`,
-`bun run smoke` or `bun run measure`, all of which speak HTTP and never render a
-pixel.
+The latest pass was run on 29 September 2026 against 9,266+ ledger entries
+spanning 2018–2026: **273 console checks and 82 portal checks, all passing.** Two
+defects that made *every* screen blank were found this way; neither was visible
+to `bun run check`, `bun run smoke` or `bun run measure`, all of which speak HTTP
+and never render a pixel.
 
 ## What it checks, and why each thing is checked
 
@@ -437,7 +437,7 @@ is `__convex` rather than `convex` because the repository has a real `convex/`
 directory that Vite serves as `/convex/_generated/api.js`; proxying that name
 hands the app's own modules to the backend and blanks the page.
 
-Both origins now pass all 263 checks.
+Both origins now pass all 273 checks.
 
 ### 4. A historical bank passbook showed the wrong year, and was slow
 
@@ -528,7 +528,7 @@ that cannot fail is not a test.
 
 `bun run visual:ui` (30 assertions) is a third, separate suite. The other two
 drive a desktop viewport, which is precisely why a console with **no navigation
-at all below the `lg` breakpoint**could pass 263 console assertions, 71 portal assertions, 37 smoke checks and 115 security checks. The sidebar is
+at all below the `lg` breakpoint**could pass 273 console assertions, 82 portal assertions, 37 smoke checks and 126 security checks. The sidebar is
 `hidden lg:flex`; the phone header carried the logo, the theme toggle and a
 sign-out button. A treasurer on a phone could open the app, see the dashboard,
 and reach none of the other twelve routes. Nothing failed, because the app was

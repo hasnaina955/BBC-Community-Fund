@@ -44,10 +44,19 @@ CommunityFund is the tool a treasurer uses to:
 And the tool a member uses to:
 
 - See what they owe this month, in arrears, and in total — without asking anyone
+- See the bank account and UPI QR to pay into, on their phone or printed
 - Print a passbook statement, or save it as a PDF from the phone's own print sheet
 - Download a receipt for any payment ever made
 - Tell the treasurer they have already paid, and watch it get confirmed
 - Install it to their home screen and share their balance on WhatsApp
+
+**It does not take money.** There is no checkout, no payment link and no gateway.
+A member pays from their own UPI app into the organisation's bank account, and
+the app never learns that it happened — the treasurer records it. The QR code
+carries no amount, on purpose: a code with an amount on it looks like a
+checkout, and a member who believes the app is keeping track stops telling the
+treasurer, so their contribution is never recorded. See
+[docs/M4-PLAN.md](docs/M4-PLAN.md) §4.
 
 A member account sees only their own record. It is a different application from
 the console, not a reduced one: a member has no use for a sidebar of nine
@@ -67,11 +76,11 @@ destinations, and the two are gated separately on the server.
 | Collection modes | **Done (M2c)** — arrears only where a due actually exists |
 | Reconciliation and FY close | **Done (M2d)** — statements vs. the books on the statement's date; a closed year locks its entries |
 | Member portal | **Done (M3)** — what I owe, a printable passbook, receipts, mark-as-paid, installable |
-| Collection desk | **Done (M4a)** — cash sessions, receipts, and the provider seam; online collection still deferred |
+| Collection desk | **Done (M4)** — cash sessions, receipts, and a static UPI QR with the bank details; online collection declined by the committee ([docs/M4-PLAN.md](docs/M4-PLAN.md)) |
 | Reminders and arrears | **Built, unsent (M5)** — the defaulter list with ageing, the run that is recorded rather than looped, and the consent rules; the send is a seam with no vendor behind it |
-| Verified in a browser | **Done** — 263 console checks + 71 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
+| Verified in a browser | **Done** — 273 console checks + 82 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
 | Data | **Done (M1)** — seeded: 1 org, 7 staff, 3 banks, 6 funds, 84 members |
-| Online collection | **Blocked on the committee** — M4's provider half needs four answers before it can be built ([docs/M4-PLAN.md](docs/M4-PLAN.md)) |
+| Online collection | **Closed by decision, 2026-09-29** — the committee declined it. This product records money; it does not take it. Members pay into BBC's bank from their own UPI app using a QR drawn in the browser, then tell the treasurer |
 
 ## Running it
 
@@ -80,7 +89,7 @@ bun install
 bun run dev        # Convex backend + Vite together, http://localhost:5173
 bun run typecheck  # tsc -b --noEmit, app + convex
 bun run build      # typecheck + production build into dist/
-bun run check      # 115 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions, the CSV export
+bun run check      # 126 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions, the CSV export, the static UPI QR
 bun run smoke      # all 37 read models return against the seeded data
 bun run measure    # payload per screen, against history
 bun run visual     # every console screen in a real browser, against real data
@@ -214,7 +223,7 @@ Start here, then go deeper:
 ├── index.html                 # Vite entry
 ├── src/                       # application source
 │   ├── main.tsx  App.tsx  index.css
-│   ├── routes/                # the 10 recovered screens + /auth
+│   ├── routes/                # the 10 recovered screens + /auth + /me/pay
 │   ├── components/ui/         # shadcn/ui primitives
 │   ├── components/layout/     # app shell, auth gate, route guard
 │   ├── components/shared/     # page header, stat cards, status badges
@@ -232,7 +241,8 @@ Start here, then go deeper:
 │   ├── seed.ts                # demo seeder + guarded reset + history
 │   └── lib/                   # authz, audit, ledger, balances, funds, money,
 │                              # collection (the only writer of money), sequence,
-│                              # payments (the gateway provider seam),
+│                              # payments (the unwired gateway seam),
+│                              # upi lives in src/lib — see M4-PLAN
 │                              # notify (the messaging provider seam),
 │                              # reminders (who to chase, and who not)
 ├── scripts/                   # dev runner, seed drivers, smoke + measure
@@ -258,9 +268,12 @@ history, a fund model that knows the difference between money members owe and
 money they choose to give, and reconciliation that checks the books against the
 bank. M3 turns that around to face the member: a portal where a person can see
 what they owe, print a passbook, and claim a cash payment they already made. Then
-the product grows outward: actual online collection (M4), the chasing side of it
-— the defaulter list, the run that records who was chased, and the consent rules
-(M5) — multi-tenancy so more than one community can
+the collection side is settled: the committee decided this product records money
+rather than taking it, so a member pays from their own UPI app into BBC's bank
+using a static QR this app draws locally, and tells the treasurer — who records
+it at the desk and issues the receipt. Next the product grows outward: the
+chasing side — the defaulter list, the run that records who was chased, and the
+consent rules (M5) — multi-tenancy so more than one community can
 use it (M6), reporting and compliance (M7), and finally operational hardening
 (M8).
 

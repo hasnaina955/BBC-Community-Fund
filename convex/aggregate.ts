@@ -530,6 +530,7 @@ export const banks = query({
         branch: bank.branch ?? null,
         accountNumber: bank.accountNumber ?? null,
         ifscCode: bank.ifscCode ?? null,
+        upiId: bank.upiId ?? null,
         notes: bank.notes ?? null,
         balancePaise: balances.get(`bank:${bank._id}`) ?? 0,
         allocation: fundsList

@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Link } from "react-router-dom"
 import { useMutation } from "convex/react"
 import {
   CheckCircle2,
@@ -6,6 +7,7 @@ import {
   Clock,
   HandCoins,
   PartyPopper,
+  QrCode,
   XCircle,
 } from "lucide-react"
 import { api } from "../../../convex/_generated/api"
@@ -119,6 +121,21 @@ export default function PortalRequests() {
               title="I have paid"
               subtitle="Tell us, and a treasurer will confirm it"
             />
+
+            {/*
+              The order is deliberate. A member arrives here *after* paying, so
+              the account they paid into is the thing they may need to name —
+              its reference is what the treasurer will match against the bank
+              statement. Putting it above the form is also what stops the failure
+              this app is built around: a member who believes the app took their
+              money and therefore told nobody.
+            */}
+            <Button asChild variant="outline" className="w-full justify-start">
+              <Link to="/me/pay">
+                <QrCode className="size-4" />
+                Bank details and UPI QR
+              </Link>
+            </Button>
 
             {hasOpen ? (
               <Card className="border-warning/40 bg-warning/5">

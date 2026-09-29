@@ -87,6 +87,7 @@ const PortalReceipt = lazy(() =>
 )
 const PortalStatement = lazy(() => import("@/routes/portal/portal-statement"))
 const PortalRequests = lazy(() => import("@/routes/portal/portal-requests"))
+const PortalPay = lazy(() => import("@/routes/portal/portal-pay"))
 const PortalAccount = lazy(() => import("@/routes/portal/portal-account"))
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -172,6 +173,7 @@ export default function App() {
           <Route path="receipts/:id" element={<PortalReceipt />} />
           <Route path="statement" element={<PortalStatement />} />
           <Route path="requests" element={<PortalRequests />} />
+          <Route path="pay" element={<PortalPay />} />
           <Route path="account" element={<PortalAccount />} />
           <Route path="*" element={<NotFound />} />
         </Route>

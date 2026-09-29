@@ -177,6 +177,16 @@ export function usePortalSummary() {
 }
 
 /**
+ * Where the money goes: the bank account and the UPI address, and nothing else.
+ *
+ * No amount, no balance, no ledger — a member is told the account to pay into
+ * and then tells the treasurer what they sent. See `portal:paymentDetails`.
+ */
+export function usePaymentDetails() {
+  return useQuery(api.portal.paymentDetails)
+}
+
+/**
  * The full passbook: every month ever charged and every payment ever received.
  *
  * Separate from `usePortalSummary` because the screen caps its receipt list and

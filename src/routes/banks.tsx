@@ -1,7 +1,23 @@
 import { useState } from "react"
-import { Building2 } from "lucide-react"
+import { useMutation } from "convex/react"
+import { Building2, Pencil } from "lucide-react"
+import { api } from "../../convex/_generated/api"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { BankDetailsPanel } from "@/components/shared/bank-details"
+import { useCurrentUser } from "@/data/store"
+import { canEditBooks } from "@/lib/types"
+import type { Id } from "../../convex/_generated/dataModel"
 import {
   Select,
   SelectContent,
@@ -36,9 +52,11 @@ import { cn } from "@/lib/utils"
 export default function Banks() {
   const years = useYearRange()
   const model = useBanks()
+  const me = useCurrentUser()
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<string | null>(null)
   const [year, setYear] = useState(CURRENT_YEAR)
+  const [editing, setEditing] = useState(false)
 
   // The picker offers every year the community has members in. Until that range
   // arrives it offers this one, which always exists.
@@ -145,6 +163,18 @@ export default function Banks() {
                                 </p>
                               ) : null}
                               {active.ifscCode ? <p>{active.ifscCode}</p> : null}
+                              {canEditBooks(me.role) ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="mt-1 h-7"
+                                  onClick={() => setEditing(true)}
+                                  data-testid="edit-bank"
+                                >
+                                  <Pencil className="mr-1.5 size-3" />
+                                  Edit details
+                                </Button>
+                              ) : null}
                             </div>
                           </div>
 
@@ -184,6 +214,36 @@ export default function Banks() {
                           ) : null}
                         </CardContent>
                       </Card>
+
+                      {/*
+                        The account members are told to pay into, with the QR
+                        that does it. This is a printed instruction, not a
+                        checkout: the app does not take the money and never
+                        learns that it arrived, so the QR carries no amount and
+                        the treasurer records what lands by hand at the desk
+                        below. See src/lib/upi.ts.
+                      */}
+                      {active.accountNumber || active.upiId ? (
+                        <BankDetailsPanel
+                          account={{
+                            name: active.name,
+                            branch: active.branch,
+                            accountNumber: active.accountNumber,
+                            ifscCode: active.ifscCode,
+                            upiId: active.upiId,
+                            fundNames: active.allocation.map((f) => f.name),
+                          }}
+                          testId="bank-details"
+                          footer={
+                            <p>
+                              Members pay from their own UPI app. Nothing is
+                              recorded until the treasurer enters it at the
+                              collection desk, so keep the reference the member
+                              sends with it.
+                            </p>
+                          }
+                        />
+                      ) : null}
 
                       <Card>
                         <CardContent className="p-0">
@@ -319,9 +379,192 @@ export default function Banks() {
                 </div>
               </div>
             )}
+
+            <EditBankDialog
+              bank={
+                active
+                  ? {
+                      id: active.id,
+                      name: active.name,
+                      branch: active.branch,
+                      accountNumber: active.accountNumber,
+                      ifscCode: active.ifscCode,
+                      upiId: active.upiId,
+                    }
+                  : null
+              }
+              open={editing}
+              onOpenChange={setEditing}
+            />
           </div>
         )
       }}
     </WithReadModel>
+  )
+}
+
+/**
+ * Where the UPI address is set.
+ *
+ * It is a plain field on a bank account rather than a global setting because
+ * each account has its own VPA — a UPI address belongs to the bank account that
+ * issued it, and an organisation with a general fund, a zakat fund and a
+ * building fund across three branches has three addresses, not one.
+ *
+ * The validation message matters more than usual here. A VPA that is one
+ * character wrong produces a QR that scans perfectly and sends the money to a
+ * stranger, and the person who finds out is a member who believed the sign on
+ * the wall. So the address is checked on the way in
+ * (`normaliseUpiId` in `convex/funds.ts`) as well as here, and the error is
+ * shown next to the field rather than as a toast that disappears.
+ */
+function EditBankDialog({
+  bank,
+  open,
+  onOpenChange,
+}: {
+  bank: {
+    id: string
+    name: string
+    branch: string | null
+    accountNumber: string | null
+    ifscCode: string | null
+    upiId: string | null
+  } | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const update = useMutation(api.funds.updateBank)
+  const [name, setName] = useState("")
+  const [branch, setBranch] = useState("")
+  const [accountNumber, setAccountNumber] = useState("")
+  const [ifsc, setIfsc] = useState("")
+  const [upiId, setUpiId] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Seed the form when the dialog opens, so it always shows the account that is
+  // actually selected rather than whatever was typed last.
+  const [seeded, setSeeded] = useState<string | null>(null)
+  if (open && bank && seeded !== bank.id) {
+    setSeeded(bank.id)
+    setName(bank.name)
+    setBranch(bank.branch ?? "")
+    setAccountNumber(bank.accountNumber ?? "")
+    setIfsc(bank.ifscCode ?? "")
+    setUpiId(bank.upiId ?? "")
+    setError(null)
+  }
+
+  if (!bank) return null
+
+  const submit = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await update({
+        bankId: bank.id as Id<"banks">,
+        name,
+        branch,
+        accountNumber,
+        ifscCode: ifsc,
+        upiId,
+      })
+      onOpenChange(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setSeeded(null)
+        onOpenChange(next)
+      }}
+    >
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Account details</DialogTitle>
+          <DialogDescription>
+            What members are told to pay into. The UPI address is what the QR
+            code is built from.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="bank-name">Account name</Label>
+            <Input
+              id="bank-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bank-branch">Branch</Label>
+            <Input
+              id="bank-branch"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bank-account">Account number</Label>
+            <Input
+              id="bank-account"
+              value={accountNumber}
+              onChange={(e) => setAccountNumber(e.target.value)}
+              inputMode="numeric"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bank-ifsc">IFSC</Label>
+            <Input
+              id="bank-ifsc"
+              value={ifsc}
+              onChange={(e) => setIfsc(e.target.value.toUpperCase())}
+              className="tabular"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bank-upi">UPI address</Label>
+            <Input
+              id="bank-upi"
+              value={upiId}
+              onChange={(e) => setUpiId(e.target.value)}
+              placeholder="bbc@okicici"
+              className="tabular"
+              data-testid="bank-upi-input"
+            />
+            <p className="text-xs text-muted-foreground">
+              Leave empty to print the account without a QR code.
+            </p>
+          </div>
+
+          {error ? (
+            <p className="text-sm text-destructive" data-testid="bank-upi-error">
+              {error}
+            </p>
+          ) : null}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={submit}
+            disabled={busy || name.trim().length < 2}
+            data-testid="bank-save"
+          >
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

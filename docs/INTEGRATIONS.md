@@ -8,29 +8,26 @@ Related: [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md)
 
 ---
 
-## Payments — provider not yet chosen
+## Payments — no provider, by decision
 
-**Milestone:** M4 · **Purpose:** accept UPI and card payments for contributions
+**Milestone:** M4 · **Status: closed.** The committee decided on 2026-09-29 that
+this application records contributions rather than collecting them.
 
-> **The provider decision is deferred.** The text below is the original
-> pre-commitment to Stripe and is **not** an adopted choice. Research found
-> Stripe is invite-only in India, so its UPI support is only reachable on an
-> account this organisation cannot self-serve; that is why it went under review.
-> See [M4-PLAN.md](./M4-PLAN.md) for the survey, the decision record, and the
-> provider-independent work that ships while the choice is open. Nothing below
-> is implemented, and no keys should be provisioned against it yet.
+> **There is no payment provider, and none is being chosen.** The text below is
+> kept as the record of what was surveyed and why, for anyone who asks the
+> question again. **Nothing in it is implemented. No keys should be provisioned
+> against any of it.** See [M4-PLAN.md](./M4-PLAN.md) §1 for the decision and §8
+> for the research.
 
-Originally chosen because it covers hosted checkout, recurring billing, and
-signed webhooks without building a gateway, and supports UPI when the account is
-configured for India.
+The short version: no provider means no merchant account, no PAN, no settlement
+bank, and none of the onboarding that goes with them. Members pay from their own
+UPI app into BBC's existing bank account using a **static QR code this
+application draws locally**, and then tell the treasurer, who records it at the
+collection desk. The app never learns that a payment happened.
 
-> **On India-specific depth:** Stripe supports UPI through India account
-> configuration, but it is a global gateway with an India region. If UPI
-> first-and-last — QR-native collection, no-code mandates, settlement to Indian
-> accounts — turns out to be the dominant requirement, evaluate an
-> India-native gateway before committing. The integration is written behind a
-> thin `lib/payments.ts` interface precisely so the provider can be swapped
-> without touching the ledger.
+`lib/payments.ts` — the provider seam — remains, unwired, with `hasProvider()`
+returning `false`. It is no longer waiting for a decision. It is what made
+changing the committee's mind cheap.
 
 ### Provider-independent
 
@@ -44,39 +41,52 @@ succeeded.
 
 | Piece | Detail |
 | --- | --- |
-| Checkout | Per-member payment link for outstanding contributions |
-| QR | Per-fund static QR for treasurer-generated payments |
-| Recurring | Optional standing instruction for monthly contributions |
-| Webhook | `httpAction` in Convex, signature verified |
-| Refunds | Recorded as reversing ledger entries, never a balance edit |
+| Checkout | **Cancelled.** No per-member payment link, by decision |
+| QR | **Built.** A static per-account UPI QR, drawn in the browser, with no amount on it |
+| Recurring | **Cancelled.** Nothing recurs through this system |
+| Webhook | **Cancelled.** Nothing to receive one |
+| Refunds | **Cancelled.** Nothing to refund |
+
+### What the QR actually is
+
+`upi://pay?pa=<vpa>&pn=BBC&cu=INR`, and nothing else. Drawn into a `<canvas>` by
+`qrcode` in the browser, so the VPA and IFSC never leave the page.
+
+It carries **no amount and no transaction reference**, and that is a correctness
+requirement rather than a missing feature. A QR with an amount on it reads as a
+checkout: it tells the member the app knows what they owe and what they paid. It
+knows neither. A member who believes it does stops telling the treasurer, and
+their contribution is silently never recorded — the books drift by a few hundred
+rupees a month and nobody can say when it started. `bun run check` and both
+visual suites fail if `am=` or `tr=` ever appears.
 
 ### Webhook rules
 
-Non-negotiable, because a duplicate webhook that double-counts a payment will
-destroy trust in the books:
+Kept because they are good rules and this codebase gets copied. They apply to
+whatever eventually tells this system that money moved — a bank feed, a
+reconciliation import, a future provider:
 
-1. **Verify the signature** before reading the body. Unverified webhooks are
-   never processed.
+1. **Verify the signature** before reading the body. Unverified input is never
+   processed.
 2. **Idempotency.** Store the event id. A replay is acknowledged and discarded.
-3. **Out-of-order tolerance.** A `payment_intent.succeeded` arriving after
-   `invoice.paid` must not create a second payment.
+3. **Out-of-order tolerance.** A late event must not create a second payment.
 4. **Never trust the amount in the event alone** — resolve the intended
    contribution server-side and reject a mismatch.
-5. **A webhook is the only thing that marks a contribution paid.** The client
-   never asserts a payment succeeded.
+5. **Only a verified source may mark a contribution paid.** A client never
+   asserts a payment succeeded.
 6. **Failed and refunded** payments are recorded, with the contribution
-   reverting to unpaid or partial.
+   reverting.
+
+The detail that is got wrong most often: HMAC is taken over the **raw bytes**, so
+a handler must verify against the unparsed body. Parse to an object and
+re-serialise and the bytes change, which fails verification for a delivery that
+was entirely genuine — and presents as a forged request, sending the
+investigation in exactly the wrong direction.
 
 ### Environment
 
-| Variable | Where |
-| --- | --- |
-| `STRIPE_SECRET_KEY` | Convex environment, server only |
-| `STRIPE_WEBHOOK_SECRET` | Convex environment |
-| `VITE_STRIPE_PUBLISHABLE_KEY` | Client, safe to expose |
-
-Set these in Settings → Environment, and mirror them to production with
-`freebuff-deploy env set`.
+**None.** No payment provider is integrated, so no payment key is required, set,
+or mirrored to production. The static QR needs no credentials and no network.
 
 ---
 

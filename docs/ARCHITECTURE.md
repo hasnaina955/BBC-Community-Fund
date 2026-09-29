@@ -556,8 +556,13 @@ funds
 
 banks
   orgId → organizations
-  name, branch?, accountNumber?, ifscCode?, notes?, createdAt
+  name, branch?, accountNumber?, ifscCode?, upiId?, notes?, createdAt
   (NO currentBalance)
+  upiId: the address members pay to, and the only thing the static QR is
+         built from. Per-account, not per-org — a UPI address belongs to the
+         bank that issued it. The payee name is NOT here; it is a constant in
+         src/lib/upi.ts, because a treasurer should not be able to change the
+         name a member reads on a payment from a settings screen.
 
 contributions             ← the OBLIGATION ("owes ₹500 for March")
   orgId, memberId → members, fundId → funds?
@@ -707,7 +712,7 @@ Rules:
 The layout below is what the repository actually contains. (An earlier version
 of this section described a planned `queries/`, `mutations/`, `actions/` and
 `httpActions/` tree and named Stripe; the app is flatter than that, and the
-gateway is not chosen.)
+committee has since declined a gateway entirely.)
 
 ```
 convex/
@@ -730,7 +735,7 @@ convex/
     ├── balances.ts        materialised balances, verify/recompute
     ├── collection.ts      the only writer of payments
     ├── sequence.ts        receipt numbers
-    ├── payments.ts        the gateway provider seam
+    ├── payments.ts        the gateway provider seam — unwired, by decision
     ├── notify.ts          the notification provider seam, and the templates
     ├── reminders.ts       who to chase, on which channel, and who not
     ├── arrears.ts         due dates, days past due, ageing buckets
@@ -738,7 +743,9 @@ convex/
 src/
 ├── routes/                the console screens, the member portal, /auth
 ├── components/            shadcn + recovered design system
-└── lib/                   types, money, formatting, the Convex client, csv
+│   └── shared/            bank-details, upi-qr, stat-card, read-model, …
+└── lib/                   types, money, formatting, the Convex client, csv,
+                           upi (the static UPI intent and the payee name)
 ```
 
 **`lib/ledger.ts` is the only module permitted to write a `ledger_entry`**, and
@@ -748,28 +755,83 @@ ledger" true by construction rather than by review.
 
 ---
 
-## The collection desk, and the seam a gateway goes behind
+## The collection desk, and the static UPI QR that replaced a gateway
 
 The collection desk is the screen a treasurer actually uses at a meeting: open a
 session for today's date and fund, then enter cash and cheque receipts one after
 another against a running total, with no signal and no per-entry confirmation
 dialog. `/collection`.
 
-It is deliberately built as if a gateway already existed:
+**This product records money; it does not take it.** The committee decided that
+on 2026-09-29 (see [M4-PLAN.md](M4-PLAN.md) §1). A member pays from their own
+UPI app into BBC's bank account, using a QR code this application draws in the
+browser, and then tells the treasurer. Nothing in the system learns that a
+payment happened, and the desk is where it gets written down.
 
-- `convex/lib/payments.ts` declares a `PaymentsProvider` — create an intent,
-  confirm a payment, look one up by provider id — and selects an implementation.
-  The only implementation today is local, and it refuses. Adding Razorpay means
-  writing one file against that interface, not touching the money path.
-- `convex/schema.ts` already carries `gatewayIntents`, `gatewayEvents` and
-  `settlements`, with the indexes a webhook needs (`by_provider_ref`,
-  `by_event_id`). They are reset with the rest of the demo data, so the tables
-  are exercised even while empty.
-- `convex/gateway.ts` is the exceptions surface — a payment the gateway says
-  succeeded that the books do not have, a refund nobody recorded, a settlement
-  that does not tie. **Shipped empty on purpose.** A schema for a problem the
-  system does not yet have is a guess; the tables above are the guess, and they
-  are cheap to be wrong about.
+### The QR, and what it must never become
+
+`src/lib/upi.ts` builds `upi://pay?pa=<vpa>&pn=BBC&cu=INR`. `pa` is the
+organisation's UPI address, stored on the bank account; `pn` is the name a
+member reads on the pay line, fixed at **BBC**.
+
+The payload is deliberately **amountless** — no `am`, no `tr` — and that is a
+correctness requirement, not an unfinished feature. A QR with an amount on it
+reads as a checkout. It tells a member that the application knows what they owe
+and, because the amount is fixed in the code, that it knows what they paid. It
+knows neither.
+
+The failure is silent and it lands on the only thing this product exists to get
+right. A member scans, pays, sees no receipt, and either reports it or assumes.
+If they assume, nobody tells the treasurer, the contribution is never recorded,
+and the books drift by a few hundred rupees a month with no way to date the
+drift. So the absence is asserted rather than documented: `bun run check` fails
+if `am=` or `tr=` appears in the built URI, and both visual suites fail if it
+appears in the `data-upi-uri` the canvas was actually handed. The same suites
+assert the absence of a "Pay now" button on `/me/pay`.
+
+The counter-argument deserves stating, because it sounds reasonable. Encoding
+the member's outstanding total would save them arithmetic, and the QR is
+per-account so it *could* be per-member. But the app cannot know what a member
+is about to send — they may be paying one month, twelve, or a round, and an
+amount is a claim about intent that the app has no way to be right about. So it
+states the account and lets the member decide, which is also the only version
+that is true.
+
+### Drawn locally, because the VPA is the account
+
+`qrcode` renders into a `<canvas>` in the page. No request leaves the browser.
+
+A UPI address and an IFSC are the address money arrives at. Rendering them
+through a third-party QR endpoint would hand that address to somebody else's
+server in exchange for a square of black dots, and it would be the only place in
+the system where the organisation's financial identity left the building. The
+console suite records every request during a real page load, requires the
+listener to have seen at least one — so the check cannot pass by watching
+nothing — and fails if any request URL contains the VPA, the account number or
+the IFSC. It asserts on the *account details*, not on off-site traffic in
+general: the app loads webfonts from a CDN, and a blanket ban would be a check
+that fails for the wrong reason.
+
+`/me/pay` is its own page rather than a card on the balance screen because it
+gets printed: on a fridge, or on a noticeboard. A print of the balance screen
+would be wrong for both. The account number is grouped in fours for the same
+reason it is grouped on the console — a 16-digit number read aloud to a bank
+branch is transcribed wrongly by someone and correctly by nobody.
+
+### The seam, unwired
+
+`convex/lib/payments.ts` declares a `PaymentsProvider` — create an intent,
+confirm a payment, look one up by provider id — and selects an implementation.
+The only implementation is local, and it refuses. `hasProvider()` returns `false`.
+
+`convex/schema.ts` carries `gatewayIntents`, `gatewayEvents` and `settlements`,
+and `convex/gateway.ts` is the exceptions surface a gateway would be read from,
+shipped empty on purpose.
+
+None of this is waiting for a decision any more, and the honest reading is that
+the seam earned its keep by **not** being used: the committee changed its mind
+and nothing had to be unwound. Keeping it is cheap. Deleting tested code the
+moment a committee changes its mind is a habit not worth forming.
 
 What the desk gave us, which a gateway would have needed anyway:
 
@@ -780,8 +842,7 @@ number. And the count itself was a full-table scan of the `payments` table, at
 ~9,955 rows, past the server's per-query limits. `lib/sequence.ts` holds the
 counter in an org-scoped `counters` document, incremented inside the same
 transaction that writes the payment, so a receipt number is unique by
-construction and a duplicate webhook replays the same number rather than minting
-a new one.
+construction.
 
 **The exception the count scan would have become is a real one.** The 16,384-row
 and 8,192-return limits are now worked around in `balances.ts`, `aggregate.ts`,
@@ -794,8 +855,14 @@ collection desk is opened in a hurry.
 
 **Idempotency was already testable without a gateway.** `recordPaymentFor` keys
 on `idempotencyKey` through the `by_idempotency` index and returns the payment it
-already wrote. A webhook is only another caller, so the replay guarantee it will
-depend on is now asserted in `bun run check` rather than assumed until M4b.
+already wrote. The replay guarantee is asserted in `bun run check`.
+
+**And the member's claim writes nothing**, which is what makes the whole
+arrangement safe. A member who paid tells the treasurer through
+`portal:requestPayment`, which creates a *request* and stops. The treasurer
+confirms, and only then does `recordPaymentFor` — the same function the desk uses
+for cash handed over at a meeting — write the payment, the receipt and the ledger
+entry. One writer, two front doors, no shortcut.
 
 ---
 

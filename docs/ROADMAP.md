@@ -21,7 +21,7 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **V1** | Browser verification | M2c | **Done** | Every screen renders, and the numbers on it are the server's |
 | **M2d** | Reconciliation and close | M2a | **Done** | Balances reconcile with the bank |
 | **M3** | Member portal | M2 | **Done** | A member is self-sufficient |
-| **M4** | Online collection | M2, M3 | Half done — the offline half and the provider seam are built; the gateway half is blocked on the committee | A member can pay from a link |
+| **M4** | Collection | M2, M3 | **Done, by decision** — the committee declined online collection; the desk, the receipts and a static UPI QR are the shipping state | A member can find the account and the QR, and knows to tell the treasurer |
 | **M5** | Reminders and arrears | M4a | Built, unsent — the decision layer, the record and the consent rules are done; dispatch waits on a vendor | Unpaid contributions get chased |
 | **M6** | Multi-tenancy | M2 | Not started | Two orgs, no data crossover |
 | **M7** | Reports and compliance | M2 | Not started | The committee gets its answer |
@@ -400,76 +400,86 @@ function the desk uses, which `check` already drives directly.
 
 ---
 
-## M4 — Online collection
+## M4 — Online collection: decided, and closed
 
-**Goal:** money moves through the product, not just through a notebook.
+**Goal, restated by the committee:** money does *not* move through the product.
+It keeps records. The member pays from their own UPI app into BBC's bank
+account; the treasurer records what arrived. See
+[M4-PLAN.md](./M4-PLAN.md) §1 for the four answers.
+
+The goal above originally read "money moves through the product, not just through
+a notebook". That is now the opposite of what was decided, so it is replaced
+rather than quietly reinterpreted.
 
 ### Scope
 
-M4 splits in two. The provider-independent half is built; the half that needs a
-payment gateway and a merchant account is not, and cannot be until the committee
-answers the questions in [M4-PLAN.md](./M4-PLAN.md).
-
-**Built — the provider-independent half (M4a):**
+**Built — the collection desk (M4a):**
 
 - [x] Offline collection fully first class: cash and cheque with receipt number,
       collector, and reference
 - [x] **Every payment issues a receipt**
 - [x] A collection session — one date, one fund, one collector — with a running
       total as receipts are issued
-- [x] The provider seam (`lib/payments.ts`): a `PaymentsProvider` interface with
-      a local implementation, so a gateway is added behind it rather than
-      threaded through the money path
-- [x] The tables a gateway needs already exist and are reset with the rest
-      (`gatewayIntents`, `gatewayEvents`, `settlements`), and `gateway.ts` is the
-      exceptions surface they will be read from — shipped **empty by design**
 - [x] Receipt numbers come from a real sequence (`lib/sequence.ts`), not a
       table count
+- [x] The provider seam (`lib/payments.ts`): a `PaymentsProvider` interface with
+      a local implementation. It is unwired and no longer waiting for a
+      decision — it is what made changing the committee's mind cheap
+- [x] The tables a gateway would need already exist and are reset with the rest
+      (`gatewayIntents`, `gatewayEvents`, `settlements`), and `gateway.ts` is the
+      exceptions surface they would be read from — shipped **empty by design**
 
-**Not built — the provider half (M4b), blocked on the committee:**
+**Built — the static UPI QR, which is what replaced the gateway:**
 
-- [ ] Payment gateway integration: UPI and cards (provider decision deferred —
-      see [M4-PLAN.md](./M4-PLAN.md))
-- [ ] Payment link or per-member checkout for a contribution
-- [ ] Per-fund QR code for treasurer-generated payments
-- [ ] Webhook endpoint, signature verification, **idempotent processing**
-- [ ] Webhook creates a `payment` and the matching ledger entry
-- [ ] Out-of-order and duplicate events handled; retry-safe
-- [ ] Failed and refunded payments recorded
+- [x] UPI address (`upiId`) on a bank account, validated on the way in
+- [x] A printable account panel: account number grouped in fours, IFSC, UPI
+      address, and the QR — on the console Banks screen
+- [x] `/me/pay` in the member portal: the account and the QR, with a print
+      button, and the instruction to tell the treasurer
+- [x] The QR is drawn in the browser; no request leaves the page
+- [x] The QR carries **no amount and no transaction reference**, and the suites
+      fail if it ever does
+
+**Cancelled — the provider half (M4b).** Not deferred; not going to happen:
+
+- ~~Payment gateway integration (UPI and cards)~~ — no merchant account needed
+- ~~Payment link or per-member checkout~~ — a QR is an instruction, not a checkout
+- ~~Per-fund dynamic QR~~ — nothing signs a per-member code without a gateway
+- ~~Webhook endpoint, signature verification, idempotent processing~~ — nothing to receive
+- ~~Failed and refunded payments recorded~~ — nothing to refund
 
 ### Exit criteria
 
-Two of the three are met, and the one that is not is the one that needs a
-merchant account:
+Restated, because the original second criterion described a flow the committee
+declined:
 
 - [x] A cash collection at a meeting with no signal is recorded and reconciled
       later
-- [ ] A member pays from a link; the contribution flips to paid and a ledger
-      entry appears — **M4b, blocked**
+- [x] A member can find the account to pay, on their phone and on a printed
+      sheet, and knows they must then tell the treasurer
 - [x] Replaying the same request does not double-count
+- [x] Nothing in the app can claim a payment happened — the one guarantee the
+      architecture owes, now load-bearing
 
-That last one is worth being precise about, because it turned out to be testable
-before there was a gateway. Idempotency was a property of `recordPaymentFor`
-(it keys on `idempotencyKey` through the `by_idempotency` index and returns the
-payment it already wrote), and a webhook is only a caller of it. A replay test
-now runs in `bun run check`, so the guarantee is banked ahead of the caller that
-will actually need it.
-
-Building the desk first was not a detour. It is the same writer — the collection
-desk mints receipts in a burst, and doing that exposed a real defect: the old
-`count + 1` receipt number is not a sequence, so two payments in the same instant
-minted the same number, and the count itself was a full-table scan of ~9,955
-payments, past the server's per-query limit. Both are fixed in
-`lib/sequence.ts` and both are covered by regressions in `bun run check`. A
-gateway, which writes payments in even tighter bursts, would have hit both
-immediately.
+That last one is the real test of this milestone. A system that takes money has
+to be right about payments arriving; a system that records them has to be
+incapable of inventing one. `recordPaymentFor` is still the only writer of money,
+and it is still called by a human decision — the treasurer confirming a claim,
+or entering a session at the desk.
 
 ### One hard constraint, recorded so it is not rediscovered
 
-A Convex `httpAction` has no `ctx.db`. A webhook must therefore hand off to an
-internal mutation, and the local Convex backend **serves no HTTP routes at all** —
-so a webhook cannot be exercised locally, only against a real deployment. M4b
-needs a staging deployment, not a sandbox.
+The old constraint — a Convex `httpAction` has no `ctx.db`, and the local
+backend serves no HTTP routes, so a webhook could never be tested locally — is
+moot. Nothing receives a webhook.
+
+The constraint that replaced it is quieter and worth stating: **the application
+must never appear to have received money.** No amount on the QR, no Pay now
+button, no success message, no payment status. A member who believes the app took
+their money stops telling the treasurer, and their contribution is silently never
+recorded. That is asserted in `bun run check` and in both visual suites, because
+the instinct to add an amount back is strong and the addition would be a serious
+defect.
 
 ---
 
@@ -536,8 +546,11 @@ somebody else by passing a different id.
   webhooks. It is a paid account and nothing is wired, by design.
 - **The cron needs a hosted deployment.** `reminders:runScheduled` is an
   `internalMutation`, callable only from a scheduler, so the monthly run cannot
-  fire against the local backend. It is covered by the same blocker as the M4b
-  gateway: a real Convex deployment.
+  fire against the local backend. It needs a real Convex deployment.
+- **The M4b gateway is closed, not waiting.** The committee answered on
+  2026-09-29: no online collection. Nothing about it is pending a decision, and
+  a static UPI QR is the shipping state. Anyone reopening this should read
+  [M4-PLAN.md](./M4-PLAN.md) §1 first.
 - **Export** of the defaulter list is **built** (see below). What is not built is
   a call list: the export names the channel a member can be reached on and
   carries no phone number or email, which is a decision rather than an

@@ -8,6 +8,7 @@ import { assertPositive, nowIso, sumPaise } from "./lib/money"
 import { ageDues, oldestDuePerMember } from "./lib/arrears"
 import { hasDues, modeOf } from "./lib/funds"
 import { recordPaymentFor } from "./lib/collection"
+import type { Id } from "./_generated/dataModel"
 import type { DataModel } from "./_generated/dataModel"
 
 /**
@@ -424,6 +425,69 @@ export const summary = query({
       voluntaryFunds: funds
         .filter((f) => !hasDues(f))
         .map((f) => ({ id: f._id, name: f.name, collectionMode: modeOf(f) })),
+    }
+  },
+})
+
+/**
+ * Where the money goes.
+ *
+ * The one query the member's "how do I pay" screen needs, and it returns bank
+ * details only — no amount, no balance, no fund ledger. A member is told the
+ * account to send to and nothing else; what they owe is on the summary they can
+ * already see, and this query deliberately cannot be used to infer anybody
+ * else's.
+ *
+ * The committee's decision is that this application records money rather than
+ * taking it (docs/M4-PLAN.md §1), so a member pays from their own UPI app into
+ * the bank account named here and then tells the treasurer, which is the
+ * `requestPayment` flow below. Nothing here observes or confirms a payment, and
+ * nothing here should ever grow the ability to.
+ */
+export const paymentDetails = query({
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireMember(ctx)
+
+    const funds = await ctx.db
+      .query("funds")
+      .withIndex("by_org", (q) => q.eq("orgId", actor.orgId))
+      .collect()
+
+    // Only a fund that can actually be paid into: it has dues, and it is drawn on
+    // a bank account. The member is not shown an account for a fund they are
+    // not charged for.
+    const payable = funds.filter((f) => hasDues(f) && f.bankId != null && f.isActive)
+    const bankIds = [...new Set(payable.map((f) => f.bankId as Id<"banks">))]
+
+    const accounts = await Promise.all(
+      bankIds.map(async (bankId) => {
+        const bank = await ctx.db.get(bankId)
+        if (!bank || bank.orgId !== actor.orgId) return null
+        return {
+          id: bank._id,
+          name: bank.name,
+          branch: bank.branch ?? null,
+          accountNumber: bank.accountNumber ?? null,
+          ifscCode: bank.ifscCode ?? null,
+          upiId: bank.upiId ?? null,
+          /** Which of their funds this account collects for. */
+          fundNames: payable
+            .filter((f) => f.bankId === bank._id)
+            .map((f) => f.name),
+        }
+      }),
+    )
+
+    return {
+      accounts: accounts.filter((a) => a !== null),
+      /**
+       * The organisation's standing instruction for a member who has paid.
+       * It is the same claim flow as everywhere else — no shortcut, because a
+       * shortcut here would be a second path into the books.
+       */
+      howToRecord:
+        "After you send it, tell the treasurer. They will confirm it and issue your receipt.",
     }
   },
 })
