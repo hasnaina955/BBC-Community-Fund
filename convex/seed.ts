@@ -378,10 +378,15 @@ export const seedDemo = mutation({
     /* ----------------------------------------------------------- banks */
 
     const bankIds: Id<"banks">[] = []
+    // The UPI address is seeded because the committee decided members are told
+    // where to send money and pay from their own app (docs/M4-PLAN.md §1). These
+    // are fictional addresses on fictional accounts, so nothing here can receive
+    // money; the treasurer replaces them on the Banks screen before anything is
+    // printed for a member.
     const bankSpecs = [
-      { name: "HDFC Bank — Andheri East", branch: "Andheri East", accountNumber: "50200034778912", ifscCode: "HDFC0000521", notes: "Primary operating account" },
-      { name: "State Bank of India — Fort", branch: "Fort", accountNumber: "38291045612", ifscCode: "SBIN0000345", notes: "Zakat collection account" },
-      { name: "ICICI Bank — Vile Parle", branch: "Vile Parle", accountNumber: "004705012893", ifscCode: "ICIC0000045", notes: "Project fund account" },
+      { name: "HDFC Bank — Andheri East", branch: "Andheri East", accountNumber: "50200034778912", ifscCode: "HDFC0000521", upiId: "bbc.hdfc@example", notes: "Primary operating account" },
+      { name: "State Bank of India — Fort", branch: "Fort", accountNumber: "38291045612", ifscCode: "SBIN0000345", upiId: "bbc.sbi@example", notes: "Zakat collection account" },
+      { name: "ICICI Bank — Vile Parle", branch: "Vile Parle", accountNumber: "004705012893", ifscCode: "ICIC0000045", upiId: "bbc.icici@example", notes: "Project fund account" },
     ]
     for (const spec of bankSpecs) {
       bankIds.push(

@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Download,
   HandCoins,
+  QrCode,
   Share2,
   Smartphone,
 } from "lucide-react"
@@ -264,6 +265,18 @@ export default function PortalHome() {
                         </p>
                       </CardContent>
                     </Card>
+                  ) : null}
+
+                  {/* How to pay, if anything is owed. Only shown when it is:
+                      a member who is up to date has nothing to pay and should
+                      not be invited to think about it. */}
+                  {!clear && data.hasDues ? (
+                    <Button asChild variant="outline" className="w-full justify-start">
+                      <Link to="/me/pay">
+                        <QrCode className="size-4" />
+                        How to pay — bank details and UPI QR
+                      </Link>
+                    </Button>
                   ) : null}
 
                   {/* What you have paid, most recent first. */}

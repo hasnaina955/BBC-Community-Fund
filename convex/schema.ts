@@ -110,6 +110,18 @@ export default defineSchema({
     branch: v.optional(v.string()),
     accountNumber: v.optional(v.string()),
     ifscCode: v.optional(v.string()),
+    /**
+     * The UPI address (VPA) money is sent to, e.g. `bbc@okicici`.
+     *
+     * Optional, because a bank account is not required to have one and the
+     * seeded data predates the committee's decision. When it is absent the
+     * account still shows its passbook and its details; it simply has no QR
+     * code to print, which is honest rather than broken.
+     *
+     * The payee name is deliberately **not** here — it is `PAYEE_NAME` in
+     * `src/lib/upi.ts`, a constant, for the reason documented there.
+     */
+    upiId: v.optional(v.string()),
     notes: v.optional(v.string()),
     createdAt: v.number(),
   }).index("by_org", ["orgId"]),  funds: defineTable({

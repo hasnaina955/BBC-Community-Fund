@@ -85,21 +85,24 @@ export default function Collection() {
       />
 
       {/*
-        Stated rather than hidden. Online collection exists on the roadmap and
-        does not work yet, because the gateway has not been chosen. A treasurer
-        who heard about it needs to be told it is not available; a treasurer who
-        has not should not have to wonder whether a button is missing because of
-        a bug.
+        Stated rather than hidden, and stated as a decision rather than a gap.
+        A member pays from their own UPI app into the bank account printed on
+        the Banks screen, and this desk is where the treasurer records what
+        arrived. Nothing here needs a payment provider, and none is coming — the
+        committee's answer is that this application keeps records rather than
+        taking money (docs/M4-PLAN.md §1).
       */}
       <Card className="border-dashed bg-muted/40">
         <CardContent className="flex items-start gap-3 p-4">
           <WifiOff className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 text-sm">
-            <p className="font-medium">Online collection is not available yet</p>
+            <p className="font-medium">
+              Money arrives by UPI, and is recorded here by hand
+            </p>
             <p className="text-muted-foreground">
-              No payment provider has been chosen, so nothing here needs one. Cash
-              and cheque collection is first class and fully reconciled — the
-              gateway decision is tracked in <code>M4-PLAN.md</code>.
+              Members pay into the account on the Banks screen. This desk is
+              where it enters the books — open a session, enter what came in, and
+              the receipt is issued from the same sequence as everything else.
             </p>
           </div>
         </CardContent>

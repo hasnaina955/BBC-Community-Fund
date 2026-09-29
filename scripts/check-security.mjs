@@ -1228,5 +1228,102 @@ check(
   JSON.stringify(parseCsv(toCsv(HOSTILE_COLUMNS, [hostile[2]]))[1]?.[4]),
 )
 
+/* ------------------------------------------------------------------ UPI ----
+ *
+ * The static UPI QR, and the one property it must never lose.
+ *
+ * The committee decided that this application records money rather than taking
+ * it (docs/M4-PLAN.md §8). Members are shown the bank account and a QR code,
+ * pay from their own UPI app, and then tell the treasurer. Nothing here
+ * confirms a payment, and the QR must keep being a *printed instruction* rather
+ * than drifting into something that looks like a checkout — which is exactly
+ * what happens if somebody helpfully adds the member's outstanding amount to it.
+ *
+ * A QR that carries `am=100` says, to a member and to a treasurer alike, that
+ * the app knows what is owed and what was paid. It knows neither. A member who
+ * believes it does stops telling the treasurer, and the contribution is simply
+ * never recorded — a silent failure in a system whose entire value is that its
+ * books are right.
+ *
+ * So the absence of an amount is asserted here, alongside the encoding rules
+ * that make the QR actually scan.
+ */
+const { upiIntentUri, isValidVpa, isValidIfsc, formatAccountNumber, PAYEE_NAME } =
+  await import("../src/lib/upi.ts")
+
+const uri = upiIntentUri({ vpa: "bbc.hdfc@example" })
+
+check(
+  "the QR carries the UPI address it was given",
+  uri.startsWith("upi://pay?pa=bbc.hdfc%40example") ||
+    uri.startsWith("upi://pay?pa=bbc.hdfc@example"),
+  uri,
+)
+check(
+  "the payee name is BBC, the string a member reads in their UPI app",
+  uri.includes(`pn=${PAYEE_NAME}`) && PAYEE_NAME === "BBC",
+  `pn=${decodeURIComponent(uri.split("pn=")[1]?.split("&")[0] ?? "?")}`,
+)
+check(
+  "the currency is fixed to rupees and is not an argument",
+  uri.includes("cu=INR") && !uri.includes("cu=USD"),
+  uri,
+)
+check(
+  "and it carries NO amount, because the app does not know what is owed",
+  !/[?&]am=/.test(uri) && !/[?&]tr=/.test(uri),
+  "an amount or a trackable reference turns a printed instruction into a checkout",
+)
+check(
+  "nor a transaction reference this system would ever look up",
+  !/[?&]mc=/.test(uri) && !/[?&]tr=/.test(uri),
+  "a reference nobody resolves invites a treasurer to trust a match",
+)
+
+// The note is a convenience for the payer. It is the one free-text value in
+// the payload, and UPI apps split on & and = without escaping, so a note with a
+// space, an ampersand or a hash silently truncates what the member sees — or
+// throws the rest of the payload away as a fragment.
+const hostileNote = upiIntentUri({
+  vpa: "bbc.hdfc@example",
+  note: "Aman & Sons #3 <March>",
+})
+check(
+  "a note with an ampersand and a hash cannot truncate the payload",
+  !/[?&=][^?&=]*[\s#]/.test(hostileNote.split("tn=")[1] ?? "") &&
+    hostileNote.split("tn=").length === 2,
+  hostileNote,
+)
+check(
+  "an empty note is omitted rather than sent blank",
+  !upiIntentUri({ vpa: "bbc.hdfc@example", note: "   " }).includes("tn="),
+  "tn= with nothing after it is noise in a payer's app",
+)
+
+// A VPA that is one character wrong produces a QR that scans perfectly and
+// sends the money to a stranger. Rejecting is the only safe behaviour; the
+// mutation rejects too, so this is the first of two gates rather than the only
+// one.
+check(
+  "a mistyped UPI address is rejected rather than rendered",
+  !isValidVpa("bbc.example") && !isValidVpa("bbc@") && !isValidVpa("@example"),
+  "each of these would produce a QR that scans and pays nobody",
+)
+check(
+  "a real one is accepted",
+  isValidVpa("bbc.hdfc@example") && isValidVpa("bbc@okicici"),
+  "the shape members' own banks issue",
+)
+check(
+  "an IFSC is checked the same way",
+  isValidIfsc("HDFC0000521") && !isValidIfsc("HDFC00521") && !isValidIfsc("HDF10000521"),
+  "four letters, a zero, then fifteen — the RBI's own layout",
+)
+check(
+  "a 16-digit account number is grouped in fours, because it gets read aloud",
+  formatAccountNumber("50200034778912") === "5020 0034 7789 12",
+  formatAccountNumber("50200034778912"),
+)
+
 console.log(`\n  ${pass} passed, ${fail} failed.\n`)
 process.exit(fail > 0 ? 1 : 0)

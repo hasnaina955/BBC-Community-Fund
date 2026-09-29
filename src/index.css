@@ -391,6 +391,18 @@
     display: table-header-group;
   }
 
+  /* The QR code is the entire point of a printed pay-details sheet, and a QR
+     that is split across a page break scans as nothing at all — a member gets
+     no error, just a dead square. So it is kept whole, and it keeps its
+     black-on-white even on a printer set to draft, which greys it into
+     something most scanners refuse. */
+  canvas[aria-label="UPI QR code"] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
   @page {
     margin: 14mm;
   }

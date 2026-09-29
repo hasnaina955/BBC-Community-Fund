@@ -78,6 +78,7 @@ export const listBanks = query({
             branch: bank.branch ?? null,
             accountNumber: bank.accountNumber ?? null,
             ifscCode: bank.ifscCode ?? null,
+            upiId: bank.upiId ?? null,
             notes: bank.notes ?? null,
           }))
           .sort((a, b) => a.name.localeCompare(b.name)),
