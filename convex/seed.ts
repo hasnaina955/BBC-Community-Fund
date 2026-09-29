@@ -114,13 +114,19 @@ async function wipe(
       .take(Math.min(500, WIPE_BUDGET - wiped))
     if (rows.length === 0) return wiped
 
-    let removed = 0
-    for (const row of rows) {
-      if (filter && !filter(row)) continue
+    const doomed = filter ? rows.filter(filter) : rows
+    // Serial, one `await` per row, and that is deliberate. Issuing the deletes
+    // concurrently (`Promise.all`) is the obvious "optimisation" and it is
+    // actively harmful: every delete in a page is buffered until the mutation
+    // commits, so 500 in flight at once is what pushed the local backend into
+    // the 2 GB cgroup and killed it outright on a 10k-row table. Convex applies
+    // them in order regardless, so the only thing batching changes is peak
+    // memory — which is the one thing that is already tight here.
+    for (const row of doomed) {
       await db.delete(row._id)
-      wiped += 1
-      removed += 1
     }
+    wiped += doomed.length
+    const removed = doomed.length
     // Nothing matched the filter and nothing can be removed: stop rather than
     // loop forever on the same rows.
     if (removed === 0) return wiped

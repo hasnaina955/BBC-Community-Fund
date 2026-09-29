@@ -146,18 +146,31 @@ The seeded deployment signs in with any of these, password `community123`:
 | `imran@example.org` | member, with a linked record |
 | `ayesha@example.org` | member, **not** linked — the claim flow |
 
-Re-seeding: `bun run seed:reset && bun run convex:seed`. The reset refuses to
-run without its exact confirm string, and only ever touches the demo
-organisation.
+Re-seeding: **`bun run seed:fresh`**. That wipes, re-seeds and re-backfills in
+one command, in about 36 seconds. Prefer it to running the steps by hand —
+running the first two and forgetting the third is the failure this replaces,
+and it is an expensive one to diagnose. A half-rebuilt demo looks perfectly
+normal and then fails `bun run check` with `closing a year stamps the entries
+dated inside it as locked — 0 entries stamped`, which reads like a balances bug
+and is not one: there is simply no history to stamp.
+
+The individual steps still exist, and the reset refuses to run without its exact
+confirm string and only ever touches the demo organisation:
+
+```bash
+bun run seed:reset     # clear every table, children before parents
+bun run convex:seed    # the base demo: users, members, funds, banks, this year
+bun run seed:history   # 2018 → last year, one year per call
+```
 
 ### Back-filling the real history
 
-The seeded deployment has nine months of data. The community's actual books go
-back to 2018, and reproducing that is the only honest way to check that the app
-handles its volume:
+The base seed covers the current year. The community's actual books go back to
+2018, and reproducing that is the only honest way to check that the app handles
+its volume — `seed:fresh` includes it, so you only need `seed:history` directly
+when you have seeded without wiping:
 
 ```bash
-bun run seed:history   # 2018 → last year, one year per call
 bun run check          # every materialised balance equals the sum of its entries
 bun run smoke          # all 37 read models return a result
 bun run measure        # what each screen actually downloads
