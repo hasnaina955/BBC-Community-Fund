@@ -213,6 +213,7 @@ without a browser:
 
 ```bash
 bun run convex:push            # push functions and codegen
+bun run seed:fresh             # wipe, re-seed and re-backfill the demo (~36s)
 bun run convex:seed            # one-shot demo data (refuses to run twice)
 
 # sign in and use the token against the read models
