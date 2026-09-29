@@ -20,6 +20,7 @@ import {
   Settings,
   Sun,
   UserRound,
+  FileSpreadsheet,
   Users,
   Wallet,
 } from "lucide-react"
@@ -60,6 +61,10 @@ const NAV = [
 const NAV_ADMIN = [
   { to: "/member-accounts", label: "Member accounts", icon: UserRound },
   { to: "/users", label: "Users", icon: Users },
+  // Import writes to the ledger, so it is a treasurer-or-admin screen. It sits
+  // with the other administration entries because for a new community it *is*
+  // the onboarding step — the screen after "create your organisation".
+  { to: "/import", label: "Import", icon: FileSpreadsheet },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const
 

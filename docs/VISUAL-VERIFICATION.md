@@ -528,7 +528,7 @@ that cannot fail is not a test.
 
 `bun run visual:ui` (30 assertions) is a third, separate suite. The other two
 drive a desktop viewport, which is precisely why a console with **no navigation
-at all below the `lg` breakpoint**could pass 273 console assertions, 82 portal assertions, 37 smoke checks and 126 security checks. The sidebar is
+at all below the `lg` breakpoint**could pass 273 console assertions, 82 portal assertions, 37 smoke checks and 139 security checks. The sidebar is
 `hidden lg:flex`; the phone header carried the logo, the theme toggle and a
 sign-out button. A treasurer on a phone could open the app, see the dashboard,
 and reach none of the other twelve routes. Nothing failed, because the app was

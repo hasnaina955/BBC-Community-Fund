@@ -2,6 +2,7 @@ import { query } from "./_generated/server"
 import { v } from "convex/values"
 import {
   requireActor,
+  requireIdentity,
   requireConsole as requireMember,
   type Actor,
 } from "./lib/authz"
@@ -24,18 +25,25 @@ export const me = query({
     // Not `requireMember`: this is the one query a plain member must be able to
     // read, because it is what tells them which world they are in. It exposes
     // nothing but their own identity and their own organisation's name.
-    const actor = await requireActor(ctx)
-    const user = await ctx.db.get(actor.userId)
-    const org = await ctx.db.get(actor.orgId)
+    // `requireIdentity` rather than `requireActor`, because of signup. A person
+    // who has just created an account is signed in with no organisation for as
+    // long as it takes them to fill in the onboarding form, and `requireActor`
+    // answers that with "No organisation is linked to this account" — which
+    // painted the whole app in AuthGate's error screen and told them their new
+    // account was broken. Nulls here mean "not yet", and the router sends them
+    // to `/welcome`.
+    const identity = await requireIdentity(ctx)
+    const org = identity.orgId ? await ctx.db.get(identity.orgId) : null
     return {
-      id: user?._id ?? actor.userId,
-      name: user?.name ?? "",
-      email: user?.email ?? "",
-      role: actor.role,
-      isActive: user?.isActive ?? true,
+      id: identity.userId,
+      name: identity.name,
+      email: identity.email,
+      role: identity.role,
+      isActive: identity.isActive,
+      orgId: identity.orgId,
       orgName: org?.name ?? "",
       orgSlug: org?.slug ?? "",
-      fundIds: actor.fundIds ?? null,
+      fundIds: identity.fundIds,
     }
   },
 })

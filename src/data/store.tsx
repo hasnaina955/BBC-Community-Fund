@@ -34,12 +34,29 @@ import type { CollectionMode, FundType, Role } from "@/lib/types"
  * the read models tell them.
  */
 
+/**
+ * What `data:me` returns, exactly — including the nulls.
+ *
+ * A signed-in account with no organisation is a real state since signup: it is
+ * where every new signup lives between the form and `/welcome`. `orgId` and
+ * `role` are null there, which is a fact about the caller and not an error.
+ *
+ * The console screens do not want to deal with that. They cannot render without
+ * a role, and none of them is the right place to send somebody to onboarding.
+ * So `CurrentUser` below narrows this to the shape a screen can assume, and
+ * `useCurrentUser` throws if the narrowing does not hold — which the router in
+ * `App.tsx` has already made impossible by redirecting orgless users away
+ * before any screen mounts.
+ */
+export type Me = Awaited<ReturnType<NonNullable<(typeof api.data.me)["_fn"]>>>
+
 export interface CurrentUser {
   id: string
   name: string
   email: string
   role: Role
   isActive: boolean
+  orgId: string
   orgName: string
   orgSlug: string
   /** Funds a `fund_manager` is scoped to; null for org-wide roles. */
@@ -83,7 +100,8 @@ export interface AppActions {
 }
 
 interface StoreValue {
-  me: CurrentUser | null
+  /** Null while loading, or when signed in with no organisation yet. */
+  me: Me | null
   isLoading: boolean
   error: string | null
   actions: AppActions
@@ -185,14 +203,25 @@ export function useStore(): StoreValue {
 }
 
 /**
- * The signed-in user. Throws if called before the query has resolved — the auth
- * gate blocks rendering until it has, so by the time a screen renders this
- * always resolves.
+ * The signed-in user, narrowed to somebody who belongs to an organisation.
+ *
+ * Throws if called before the query has resolved — the auth gate blocks
+ * rendering until it has — and if the caller has no organisation. Both are
+ * unreachable from the console and the portal, because `ConsoleGate`,
+ * `PortalGate` and `NotFound` in `App.tsx` redirect to `/welcome` first. Making
+ * that an invariant here rather than eleven `role === null` branches across the
+ * screens is the difference between one rule and a rule that can be forgotten
+ * per screen.
  */
 export function useCurrentUser(): CurrentUser {
   const { me } = useStore()
   if (!me) throw new Error("useCurrentUser called before the session loaded")
-  return me
+  if (!me.orgId || !me.role) {
+    throw new Error(
+      "useCurrentUser called for an account with no organisation; the router should have sent it to /welcome",
+    )
+  }
+  return { ...me, orgId: me.orgId, role: me.role }
 }
 
 export function useActions(): AppActions {

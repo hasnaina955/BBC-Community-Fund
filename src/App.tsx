@@ -7,7 +7,7 @@ import { FullPageLoader } from "@/components/layout/full-page-loader"
 import { PortalShell } from "@/components/portal/portal-shell"
 import { ReadModelLoader } from "@/components/shared/read-model"
 import { Button } from "@/components/ui/button"
-import { useCurrentUser } from "@/data/store"
+import { useStore } from "@/data/store"
 import Auth from "@/routes/auth"
 
 /**
@@ -78,6 +78,7 @@ const Reports = lazy(() => import("@/routes/reports"))
 const Settings = lazy(() => import("@/routes/settings"))
 const Users = lazy(() => import("@/routes/users"))
 const MemberAccounts = lazy(() => import("@/routes/member-accounts"))
+const ImportData = lazy(() => import("@/routes/import"))
 const PaymentRequests = lazy(() => import("@/routes/payment-requests"))
 const PortalHome = lazy(() => import("@/routes/portal/portal-home"))
 const PortalReceipts = lazy(() => import("@/routes/portal/portal-receipts"))
@@ -89,6 +90,12 @@ const PortalStatement = lazy(() => import("@/routes/portal/portal-statement"))
 const PortalRequests = lazy(() => import("@/routes/portal/portal-requests"))
 const PortalPay = lazy(() => import("@/routes/portal/portal-pay"))
 const PortalAccount = lazy(() => import("@/routes/portal/portal-account"))
+// Signup and onboarding, lazy for the same reason as everything else above.
+// They are the two least-frequently-visited screens in the app — most sessions
+// never see either — and importing them eagerly put ~10 kB into the chunk that
+// every signed-in member downloads before they can read their own balance.
+const Signup = lazy(() => import("@/routes/signup"))
+const Welcome = lazy(() => import("@/routes/welcome"))
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isLoading, isAuthenticated } = useConvexAuth()
@@ -112,15 +119,25 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
  * who followed a link from a treasurer and landed on an error page would conclude
  * the app was broken, and would be right about the link even if wrong about the
  * app.
+ *
+ * A signed-in account with no organisation goes to `/welcome` first. That check
+ * lives here, above `useCurrentUser`, and is what makes that hook's non-null
+ * `role` an invariant rather than a hope: every console and portal screen is
+ * only ever mounted once the caller has an organisation.
  */
 function ConsoleGate() {
-  const me = useCurrentUser()
+  const { me } = useStore()
+  if (!me) return <FullPageLoader label="Loading the books" />
+  if (!me.orgId || !me.role) return <Navigate to="/welcome" replace />
   if (me.role === "member") return <Navigate to="/me" replace />
   return <AppShell />
 }
 
 /** The portal, which committee members may also open. */
 function PortalGate() {
+  const { me } = useStore()
+  if (!me) return <FullPageLoader label="Loading" />
+  if (!me.orgId || !me.role) return <Navigate to="/welcome" replace />
   return <PortalShell />
 }
 
@@ -129,8 +146,8 @@ function PortalGate() {
  * renders an empty page — indistinguishable from the blank-screen bug above.
  */
 function NotFound() {
-  const me = useCurrentUser()
-  const isMember = me.role === "member"
+  const { me } = useStore()
+  const isMember = me?.role === "member"
 
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
@@ -157,6 +174,19 @@ export default function App() {
     <Suspense fallback={<ReadModelLoader label="Loading" />}>
       <Routes>
         <Route path="/auth" element={<Auth />} />
+        <Route path="/signup" element={<Signup />} />
+
+        {/* Onboarding. The only screen a signed-in person with no organisation
+            can reach, and the only one that may see them in that state — which
+            is why it is outside `RequireAuth`'s `AuthGate` chain. */}
+        <Route
+          path="/welcome"
+          element={
+            <RequireAuth>
+              <Welcome />
+            </RequireAuth>
+          }
+        />
 
         {/* The member portal. Its own shell, its own routes, reachable by anyone
             signed in — a treasurer checking their own record is welcome here too. */}
@@ -191,6 +221,7 @@ export default function App() {
           <Route path="funds/:id" element={<FundDetail />} />
           <Route path="members" element={<Members />} />
           <Route path="member-accounts" element={<MemberAccounts />} />
+          <Route path="import" element={<ImportData />} />
           <Route path="contributions" element={<Contributions />} />
           <Route path="collection" element={<Collection />} />
           <Route path="reminders" element={<Reminders />} />

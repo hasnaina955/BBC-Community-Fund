@@ -22,6 +22,8 @@
     "measure": "node scripts/measure-payload.mjs",
     "visual": "node scripts/visual-check.mjs",
     "visual:portal": "node scripts/visual-portal.mjs",
+    "visual:signup": "node scripts/visual-signup.mjs",
+    "visual:import": "node scripts/visual-import.mjs",
     "visual:ui": "node scripts/visual-ui.mjs",
     "visual:recovery": "node scripts/prove-recovery.mjs",
     "icons": "node scripts/make-icons.mjs",

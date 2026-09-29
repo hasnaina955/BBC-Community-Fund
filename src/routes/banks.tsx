@@ -275,6 +275,14 @@ export default function Banks() {
                             <p className="px-5 py-10 text-center text-sm text-muted-foreground">
                               Loading the {year} passbook…
                             </p>
+                          ) : passbook === null ? (
+                            // The bank list is already scoped to the caller's
+                            // organisation, so a null here means the account
+                            // was deleted or the id went stale — not that there
+                            // is nothing to show for a real account.
+                            <p className="px-5 py-10 text-center text-sm text-muted-foreground">
+                              This account is no longer available.
+                            </p>
                           ) : passbook.entries.length === 0 ? (
                             <p className="px-5 py-10 text-center text-sm text-muted-foreground">
                               No entries on this account in {year}.
