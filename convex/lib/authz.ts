@@ -47,6 +47,70 @@ function fundsForUser(
     )
     .collect()
     .then((funds) => funds.map((f) => f._id))
+}/**
+ * The auth user row behind this session, or throw.
+ *
+ * Split out from `requireActor` so that the one caller which legitimately has
+ * no organisation yet — signup onboarding — can resolve an identity without
+ * also having to invent a way around the org check. It deliberately checks
+ * nothing but authentication, because that is the only thing both callers agree
+ * on; every further condition is applied by the function that owns it, so there
+ * is no single place where a new rule could be added and quietly skipped by one
+ * of them.
+ */
+async function resolveUser(ctx: QueryCtx | MutationCtx) {
+  const userId = await getAuthUserId(ctx)
+  if (!userId) throw new Error("Not signed in")
+  const user = await ctx.db.get(userId)
+  if (!user) throw new Error("Not signed in")
+  return { userId, user }
+}
+
+/**
+ * Who the caller is, whether or not they belong to an organisation yet.
+ *
+ * `null` in `orgId` and `role` means "signed in, no organisation yet" — the
+ * state every new signup is in between the form and the onboarding screen. It
+ * is a normal state, not an error, and it is the only thing `orgs.mySetup`
+ * exists to report. See `convex/orgs.ts`.
+ */
+export interface Identity {
+  userId: Id<"users">
+  orgId: Id<"organizations"> | null
+  role: Role | null
+  fundIds: Id<"funds">[] | null
+  name: string
+  email: string
+  isActive: boolean
+}
+
+export async function requireIdentity(
+  ctx: QueryCtx | MutationCtx,
+): Promise<Identity> {
+  const { userId, user } = await resolveUser(ctx)
+  const base = {
+    userId,
+    name: user.name ?? "",
+    email: user.email ?? "",
+    isActive: user.isActive ?? true,
+  }
+  // A deactivated account is not a valid identity whether or not it has an org,
+  // so this is the one condition checked before the org branch.
+  if (user.isActive === false) {
+    throw new Error("This account has been deactivated")
+  }
+  if (!user.orgId || !user.role) {
+    return { ...base, orgId: null, role: null, fundIds: null }
+  }
+  return {
+    ...base,
+    orgId: user.orgId,
+    role: user.role,
+    fundIds:
+      user.role === "fund_manager"
+        ? await fundsForUser(ctx.db, user.orgId, userId)
+        : null,
+  }
 }
 
 /**
@@ -56,11 +120,7 @@ function fundsForUser(
 export async function requireActor(
   ctx: QueryCtx | MutationCtx,
 ): Promise<Actor> {
-  const userId = await getAuthUserId(ctx)
-  if (!userId) throw new Error("Not signed in")
-
-  const user = await ctx.db.get(userId)
-  if (!user) throw new Error("Not signed in")
+  const { userId, user } = await resolveUser(ctx)
 
   // A user row exists before it is attached to an organisation (the seeder
   // and signup create the identity first). Such a user has access to nothing.

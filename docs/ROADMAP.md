@@ -23,7 +23,7 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **M3** | Member portal | M2 | **Done** | A member is self-sufficient |
 | **M4** | Collection | M2, M3 | **Done, by decision** — the committee declined online collection; the desk, the receipts and a static UPI QR are the shipping state | A member can find the account and the QR, and knows to tell the treasurer |
 | **M5** | Reminders and arrears | M4a | Built, unsent — the decision layer, the record and the consent rules are done; dispatch waits on a vendor | Unpaid contributions get chased |
-| **M6** | Multi-tenancy | M2 | Not started | Two orgs, no data crossover |
+| **M6** | Multi-tenancy | M2 | In progress | Signup and isolation proven; import and org switcher still open |
 | **M7** | Reports and compliance | M2 | Not started | The committee gets its answer |
 | **M8** | Hardening and operations | M3–M7 | Not started | It can be relied on |
 
@@ -567,21 +567,180 @@ lands, CommunityFund is an internal tool for a single organization.
 
 ### Scope
 
-- [ ] `organizations` table; every table org-scoped and indexed on `orgId`
-- [ ] Signup creates an org and the first admin
-- [ ] Onboarding wizard: org details, banks, funds, members, import
-- [ ] Member and payment CSV import — the real adoption path
+- [x] `organizations` table; every table org-scoped and indexed on `orgId`
+      *(already true at M1 — all 20 non-org tables carry `orgId` and a `by_org`
+      index; the org table itself is the one that must not)*
+- [x] Signup creates an org and the first admin
+      *(`/signup` creates the identity, `/welcome` creates the organisation and
+      makes the creator its first `admin` — see `convex/orgs.ts` and
+      `scripts/visual-signup.mjs`)*
+- [x] Onboarding wizard: org details, banks, funds, members, import
+      *(org details, a first bank account and a first fund are done, and the
+      import is the member-and-history half — see `scripts/visual-import.mjs`)*
+- [x] Member and payment CSV import — the real adoption path
+      *(contributions, payments and ledger entries, with a server-side preview
+      that reports every problem in the file before anything is written — see
+      `convex/imports.ts` and `convex/lib/importcsv.ts`)*
 - [ ] Org switcher for users in multiple orgs
 - [ ] Per-org settings and numbering sequences
-- [ ] Enforce org isolation in the shared `authz` helper, not per-handler
-- [ ] Data export and account deletion for a departing org
-- [ ] Cross-org access test suite
+- [x] Enforce org isolation in the shared `authz` helper, not per-handler
+      *(`requireActor` resolves `orgId` before any handler runs; the three
+      console read-model files import `requireConsole` under the old
+      `requireMember` name so a query added later cannot pick up the weaker
+      gate)*
+- [~] Data export and account deletion for a departing org
+      *(deletion is built — `orgs.deleteOrganization` purges every org-scoped
+      table in one transaction; the export half is not)*
+- [x] Cross-org access test suite
 
 ### Exit criteria
 
-- Two orgs exist with data that never crosses
-- Every query is provably org-scoped (tested, not assumed)
-- A new community can sign up and be running in under an hour with a CSV import
+- [x] Two orgs exist with data that never crosses
+- [x] Every query is provably org-scoped (tested, not assumed)
+- [x] A new community can sign up and be running in under an hour with a CSV import
+      *(both halves are proven end to end and neither touches the seeded data)*
+
+### Signup, and why it is two screens
+
+A community now arrives through a door: `/signup` takes a name, an email and a
+password, and `/welcome` takes the organisation. The split is not a UX
+preference, it is the only ordering the data model allows.
+
+The auth provider writes the `users` row, and at the instant it does there is no
+organisation to point at and nobody to be on the committee of. So the account
+exists first, with `orgId` and `role` both null — a state the system had never
+had and did not model. `requireActor` answered it with *No organisation is
+linked to this account*, which is correct and, on its own, painted the entire
+app in the "could not load your data" screen and told a brand-new user their
+account was broken.
+
+Three things came out of that:
+
+**`requireIdentity` sits beside `requireActor` rather than inside it.**
+`convex/orgs.ts` is the only file in the codebase where "signed in" is enough
+to do something, and it is the only file where that is true. Everywhere else,
+`requireActor` still refuses first. The two functions share `resolveUser`, so
+the "Not signed in" rule cannot drift between them, and they agree on nothing
+else — every further condition is applied by the function that owns it.
+
+**`orgs.createOrganization` refuses a caller who already has an organisation.**
+This is load-bearing rather than tidiness. Without it, any existing admin could
+call it and receive a second organisation they would also administer — a way
+around every role check in the system, by making a fresh tenant. It takes no id
+argument, so there is nothing to aim at somebody else's.
+
+**The slug is derived on the server, not chosen.** Two communities called
+"Jamaat Anjuman" in different cities both get a working identifier without
+either being asked to invent one.
+
+### The import, and the rule it is not allowed to break
+
+`bun run visual:import` — 49 checks — imports a grid, a payment register and a
+set of ledger entries through the real screen.
+
+The design constraint is that **`convex/imports.ts` may not write to
+`ledgerEntries`, `payments` or `contributions` directly.** It calls
+`postEntry` and `recordPaymentFor` — the same two functions the treasurer's desk
+calls — so an imported rupee produces byte-for-byte the rows a typed one would,
+including receipt numbering, the materialised `balances` update, the
+closed-period check and the audit row.
+
+That is not tidiness. A second writer of money is the one bug in this codebase
+that cannot be walked back, and the import path is the *most* dangerous place
+for it, because it is the one that runs unattended over eight years of
+somebody's history. The suite asserts `balances:verify` still holds after an
+import, which only happens if the ordinary writers were used.
+
+**Everything is validated before anything is written.** The preview is a
+*query* running the same parser as the commit, so what it says is what the
+commit does, and the import button does not exist until it comes back clean. A
+file with 4,000 good rows and one bad one imports nothing — the alternative is a
+half-imported ledger, and the only way to undo one of those is a reversing entry
+that somebody has to find later. Every problem is reported at once, by row,
+because a treasurer fixing row 4,000 cannot afford to fix them one exception per
+upload.
+
+**It is safe to run twice.** Every row carries a key derived from a hash of the
+file's contents, so a double click or a browser retry produces the same books.
+
+### The bug the import suite found, which is the reason it is worth having
+
+A member's file said January and March were paid, leaving February open. The
+import replays a payment for each paid month, and the ledger settles the oldest
+unpaid month first, so **the March payment settled February** — and March was
+left open.
+
+The first implementation resolved that by forcing the file's stated status onto
+March. The grid then showed Ayesha as paid for all three months: **₹450 claimed
+from a member who had given ₹300.** The money was right; the grid was not, and
+a grid that overstates collection is the one number a treasurer cannot audit
+their way out of.
+
+The rule is now absolute: *a month is only ever paid because a payment settled
+it.* The ledger decides where the money went, the grid agrees with the ledger,
+and the difference is reported — "the file says 2024-03 was paid, but that
+payment settled an earlier unpaid month; 2024-03 is still shown as due" — rather
+than papered over. There is an assertion in the suite named for this.
+
+### The end-to-end suite, and what it is really for
+
+`bun run visual:signup` — 35 checks — is the only suite that signs nobody in.
+Every other one signs in as an account the seeder wrote, and the seeder writes
+`organizations` *before* `users`, which is the exact order a real community
+cannot happen in. Nothing before M6 had ever driven the door.
+
+The load-bearing group is the isolation one. Every other check in the file would
+also pass against a build where signup quietly attached the new account to the
+seeded organisation — which is the failure mode M6 exists to prevent and which
+nothing else in the codebase would catch. So the suite signs in as the demo
+community's treasurer, in the same browser, and asserts they can see none of the
+new community: not its fund, not its bank passbook, not its money.
+
+It also deletes what it creates, and then checks the deletion happened. Each
+run makes a real organisation with a real administrator; leaving those behind
+would accumulate, and every one of them would be indistinguishable from a
+genuine tenant to every other suite. A gate that can only be run once is not a
+gate.
+
+### What the isolation suite found
+
+The first exit criterion is the one worth writing down, because it produced a
+real defect that a code review would not have.
+
+`aggregate:bankPassbook` was safe but not by construction. Every read inside it
+was scoped to `actor.orgId` and then filtered by `args.bankId`, so a bank id
+belonging to another organisation produced a well-shaped, correctly-zeroed
+passbook: zero opening, zero closing, no entries. Nothing leaked. But the handler
+never asked whether the bank was the caller's, and "no leak" and "queried the
+wrong org and got an empty answer" are indistinguishable to a caller. The next
+person to loosen that filter would have lost the guarantee without changing a
+line anyone was looking at. It now returns `null` for a foreign or missing bank,
+exactly as `fundDetail` and `memberPassbook` already did.
+
+So the suite is not asserting "no money came back" — several of its assertions
+would have passed against the old code. It asserts that every id-taking query
+*refuses*, in a single uniform shape, so the difference between "I found nothing"
+and "that is not yours" is not something each handler has to remember.
+
+The suite signs in as each org's own admin, takes the **other** org's real
+document ids, and points every id-taking query at them — both directions, plus
+the two listings that need no id at all and would leak more quietly. It also
+drives a plain `member`-role account, which is refused the console read models
+outright and can only reach `portal:summary`; the member's dues are checked to be
+computed inside their own organisation, since a dues total is the easiest number
+in the product to get wrong by dropping one `orgId` filter and the hardest for
+a human to notice.
+
+`convex/seedSecondOrg.ts` is the fixture — `masjid-committee`, its own admin,
+bank, fund, member, a paid contribution and three balance rows. It is
+idempotent and returns the existing ids when re-run, so it is a gate that can
+be re-run rather than a one-shot.
+
+**Still open:** a new community can now register, name itself, and bring its
+history in — but it starts with no *members*, only the ones the import names. A
+treasurer whose spreadsheet has no email column has to add their cousins one at
+a time first, and member import is not built. There is also no org switcher, no
+per-org settings, and no data export (deletion is built; export is not).
 
 ---
 

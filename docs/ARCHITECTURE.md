@@ -385,6 +385,7 @@ handler body:
 | `requireConsole` | `atLeast(viewer)` — on the committee | every console read model |
 | `requireTreasurer` | `atLeast(treasurer)` | writes, and the portal's back office |
 | `requireAdmin` | `atLeast(admin)` | users, settings, the close |
+| `requireIdentity` | a valid session, org or not | `data:me`, `orgs.mySetup` |
 
 `aggregate.ts`, `reconciliation.ts` and `data.ts` import `requireConsole` *under
 the name `requireMember`*, so the 30-odd call sites did not have to be rewritten
@@ -396,6 +397,22 @@ a member has to be able to learn that they are one. The app-wide `DataProvider`
 subscribes to it and nothing else. The org-wide shell summary moved into
 `AppShell`, which only a committee member mounts, because while it lived in the
 provider every signed-in visitor downloaded it before any screen was chosen.
+
+### The one exception, and why it is a file rather than a flag
+
+`requireIdentity` is the only helper that answers without an organisation, and
+it exists because signup cannot be done any other way: the auth provider writes
+the `users` row before there is a community for it to belong to. `convex/orgs.ts`
+is the only module that uses it, plus `data:me` so the app can route on it. Every
+other function in `convex/` resolves an organisation first, and the exception is
+the size of one file rather than a condition sprinkled across them.
+
+That distinction is why `data:me` is not `requireMember`. An account with no
+organisation used to make it throw *No organisation is linked to this account*,
+and because `DataProvider` wraps the whole app, a brand-new signup was met with
+the full-screen "could not load your data" panel and a message telling them
+their new account was broken. `null` in `orgId` now means "not yet", and
+`ConsoleGate` and `PortalGate` in `App.tsx` send it to `/welcome`.
 
 `bun run check` asserts the refusal across the whole console read-model surface
 rather than one screen, because the failure mode is a *new* screen quietly reusing
@@ -725,6 +742,8 @@ convex/
 ├── portal.ts              the member's own record
 ├── receipts.ts            printable documents, as queries
 ├── reconciliation.ts      statements, differences, fiscal-year close
+├── orgs.ts                signup onboarding, and org deletion
+├── imports.ts             the historical CSV import: preview, then commit
 ├── gateway.ts             online-payment exceptions — empty by design
 ├── seed.ts                demo seeder, guarded reset, history back-fill
 └── lib/
@@ -734,6 +753,7 @@ convex/
     ├── ledger.ts          the only writer of ledger_entries
     ├── balances.ts        materialised balances, verify/recompute
     ├── collection.ts      the only writer of payments
+    ├── importcsv.ts       the CSV reader: RFC 4180, rupees, day-first dates
     ├── sequence.ts        receipt numbers
     ├── payments.ts        the gateway provider seam — unwired, by decision
     ├── notify.ts          the notification provider seam, and the templates
@@ -752,6 +772,16 @@ src/
 `lib/collection.ts` the only one permitted to write a `payment`. Every
 balance-affecting path goes through them. This is what keeps the invariant in "The
 ledger" true by construction rather than by review.
+
+`convex/imports.ts` is not an exception to that rule, and it is worth saying
+why, because it is the one path that would look like an exception. It reads a
+community's spreadsheet and calls the same two writers — an imported rupee
+produces the same rows, receipt number, balance update, closed-period check and
+audit row as a typed one. It is also the path most likely to be run unattended
+over eight years of somebody's history, so a second writer of money here would
+be the single most expensive bug in the codebase. `scripts/visual-import.mjs`
+asserts `balances:verify` still holds after an import, which only happens if the
+ordinary writers were used.
 
 ---
 

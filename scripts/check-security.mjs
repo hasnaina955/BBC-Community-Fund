@@ -1325,5 +1325,270 @@ check(
   formatAccountNumber("50200034778912"),
 )
 
+
+/* -------------------------------------------------------------------------- *
+ * M6 — cross-organisation isolation
+ *
+ * Everything above proves that one organisation behaves. This proves a second
+ * one cannot be reached, which is the M6 exit criterion stated as "tested, not
+ * assumed".
+ *
+ * The method is the only honest one available: sign in as each org's admin,
+ * take the *other* org's real document ids, and point every id-taking query at
+ * them. A handler that filters by orgId returns null; one that forgets returns
+ * a stranger's bank details. Both read identically in the source, which is
+ * exactly why this has to be a test and not a code review.
+ *
+ * The second org is a fixture, not a demo — see convex/seedSecondOrg.ts.
+ * -------------------------------------------------------------------------- */
+
+console.log("\nM6 — cross-organisation isolation")
+
+// `JSON.stringify(undefined)` is `undefined`, so a `.slice()` on it throws and
+// takes the whole suite down before the final tally prints. A detail string is
+// never worth losing 126 passing assertions over, so every one goes through
+// this, which also has to cope with a Convex error payload.
+const brief = (value, n = 200) => {
+  if (value === undefined) return "undefined"
+  if (value === null) return "null"
+  try {
+    return (JSON.stringify(value) ?? String(value)).slice(0, n)
+  } catch {
+    return String(value).slice(0, n)
+  }
+}
+
+const second = await call(
+  "seedSecondOrg:seedSecondOrg",
+  { confirm: "seed second org" },
+  undefined,
+  "mutation",
+)
+
+if (second.status !== "success" || !second.value?.ids) {
+  // A missing or unusable fixture is not a pass. Saying so is the whole point:
+  // "isolation is fine" is not a claim this suite can make if there was never
+  // a second org to attack.
+  check(
+    "the second organisation exists to test isolation against",
+    false,
+    second.errorMessage ?? brief(second, 300),
+  )
+} else {
+  const other = second.value
+  const otherIds = other.ids
+
+  const demoToken = await signIn("secretary@jamaat.org")
+  const otherToken = await signIn(other.signInAs)
+
+  const demoFunds = await call("data:listFunds", {}, demoToken)
+  const demoMembers = await call("data:listMembers", {}, demoToken)
+  const demoFundId = demoFunds.value?.[0]?.id
+  const demoMemberId = demoMembers.value?.[0]?.id
+
+  // Establish that both orgs are real and readable by their own admin FIRST.
+  // If either of these fails, every "refused" result below is vacuous — an
+  // empty database refuses everything.
+  const ownDemo = await call(
+    "aggregate:fundDetail",
+    { fundId: demoFundId },
+    demoToken,
+  )
+  const ownOther = await call(
+    "aggregate:fundDetail",
+    { fundId: otherIds.fundId },
+    otherToken,
+  )
+  check(
+    "each organisation can read its own fund, so the refusals below mean something",
+    ownDemo.status === "success" &&
+      ownDemo.value !== null &&
+      ownOther.status === "success" &&
+      ownOther.value !== null,
+    `demo: ${brief(ownDemo.value ?? ownDemo.errorMessage, 120)} | ` +
+      `other: ${brief(ownOther.value ?? ownOther.errorMessage, 120)}`,
+  )
+
+  /* ---- the demo admin, holding the second org's ids ---- */
+
+  for (const [label, path, args] of [
+    ["fundDetail", "aggregate:fundDetail", { fundId: otherIds.fundId }],
+    [
+      "memberPassbook",
+      "aggregate:memberPassbook",
+      { memberId: otherIds.memberId },
+    ],
+    ["bankPassbook", "aggregate:bankPassbook", { bankId: otherIds.bankId }],
+  ]) {
+    const res = await call(path, args, demoToken)
+    // `null` is the correct refusal. A thrown error is also safe, so both pass;
+    // what must never happen is a populated result.
+    const leaked =
+      res.status === "success" && res.value !== null && res.value !== undefined
+    check(
+      `${label} refuses another organisation's id`,
+      !leaked,
+      leaked ? `LEAKED: ${brief(res.value, 250)}` : res.errorMessage,
+    )
+  }
+
+  // Assert on the money, not just on the null. A handler could return a
+  // correctly-shaped but empty object having queried the wrong org, and that
+  // would pass a bare `=== null` check while still being a scoping mistake.
+  const foreignPassbook = await call(
+    "aggregate:memberPassbook",
+    { memberId: otherIds.memberId },
+    demoToken,
+  )
+  const disclosed =
+    foreignPassbook.status === "success" && foreignPassbook.value !== null
+      ? (foreignPassbook.value.totalReceivedPaise ?? 0)
+      : 0
+  check(
+    "a foreign passbook discloses no money",
+    disclosed === 0,
+    `totalReceivedPaise was ${disclosed}`,
+  )
+
+  /* ---- the other direction, so the check is not one-sided ---- */
+
+  const reverse = await call(
+    "aggregate:fundDetail",
+    { fundId: demoFundId },
+    otherToken,
+  )
+  check(
+    "isolation holds in both directions",
+    reverse.status !== "success" || reverse.value === null,
+    `LEAKED: ${brief(reverse.value, 250)}`,
+  )
+
+  /* ---- listings: no ids required, so a subtler hole ---- */
+
+  const [demoBanks, otherBanks, demoMemberList, otherMemberList] =
+    await Promise.all([
+      call("data:listBanks", {}, demoToken),
+      call("data:listBanks", {}, otherToken),
+      call("data:listMembers", {}, demoToken),
+      call("data:listMembers", {}, otherToken),
+    ])
+
+  const demoBankRows = demoBanks.value ?? []
+  const otherBankRows = otherBanks.value ?? []
+  const demoMemberRows = demoMemberList.value ?? []
+  const otherMemberRows = otherMemberList.value ?? []
+
+  check(
+    "neither bank list contains the other organisation's account",
+    !demoBankRows.some((r) => r.id === otherIds.bankId) &&
+      !otherBankRows.some((r) => r.id === demoBanks.value?.[0]?.id) &&
+      demoBankRows.length > 0 &&
+      otherBankRows.length > 0,
+    `demo: ${demoBankRows.map((r) => r.name).join(", ")} | ` +
+      `other: ${otherBankRows.map((r) => r.name).join(", ")}`,
+  )
+
+  check(
+    "neither member list contains the other organisation's members",
+    !demoMemberRows.some((r) => r.id === otherIds.memberId) &&
+      !otherMemberRows.some((r) => r.id === demoMemberId) &&
+      demoMemberRows.length > 0 &&
+      otherMemberRows.length > 0,
+    `demo ${demoMemberRows.length} members, other ${otherMemberRows.length}`,
+  )
+
+  // The aggregate read models are what every screen is built on. If any of them
+  // counted across orgs, the numbers on a treasurer's dashboard would silently
+  // include another community's money.
+  // `shell` returns a flat summary keyed `orgName` — there is no nested
+  // `organization` object to compare, so the identity assertion is on the
+  // name the header actually renders.
+  const [demoShell, otherShell] = await Promise.all([
+    call("aggregate:shell", {}, demoToken),
+    call("aggregate:shell", {}, otherToken),
+  ])
+  check(
+    "the shell reports each organisation's own name",
+    demoShell.status === "success" &&
+      otherShell.status === "success" &&
+      typeof demoShell.value?.orgName === "string" &&
+      typeof otherShell.value?.orgName === "string" &&
+      demoShell.value.orgName.length > 0 &&
+      otherShell.value.orgName.length > 0 &&
+      demoShell.value.orgName !== otherShell.value.orgName,
+    `demo: ${brief(demoShell.value?.orgName ?? demoShell.errorMessage, 120)} | ` +
+      `other: ${brief(otherShell.value?.orgName ?? otherShell.errorMessage, 120)}`,
+  )
+
+  const [demoFundsAgg, otherFundsAgg] = await Promise.all([
+    call("aggregate:funds", {}, demoToken),
+    call("aggregate:funds", {}, otherToken),
+  ])
+
+  // `aggregate:funds` returns the array itself, not a wrapper object.
+  const demoFundRows = Array.isArray(demoFundsAgg.value) ? demoFundsAgg.value : []
+  const otherFundRows = Array.isArray(otherFundsAgg.value)
+    ? otherFundsAgg.value
+    : []
+  check(
+    "the fund read model counts only the caller's own funds",
+    demoFundsAgg.status === "success" &&
+      otherFundsAgg.status === "success" &&
+      demoFundRows.length > 0 &&
+      otherFundRows.length > 0 &&
+      !demoFundRows.some((f) => f.id === otherIds.fundId) &&
+      !otherFundRows.some((f) => f.id === demoFundId),
+    `demo ${brief(demoFundRows.map((f) => f.name), 120)}, ` +
+      `other ${brief(otherFundRows.map((f) => f.name), 120)}`,
+  )
+
+  /* ---- a plain member, who has the least authority ---- */
+
+  // Not `aggregate:shell`: `aggregate.ts` aliases `requireConsole as
+  // requireMember`, so the whole console read model is refused a `member` role
+  // by design (asserted separately above, on the refusal itself). The member
+  // portal's own read model is what a member can actually reach, so that is
+  // what has to resolve to their own organisation and not the other one.
+  const memberToken = await signIn("imran@example.org")
+  const memberSummary = await call("portal:summary", {}, memberToken)
+  check(
+    "a member's portal resolves to their own organisation",
+    memberSummary.status === "success" &&
+      typeof memberSummary.value?.orgName === "string" &&
+      memberSummary.value.orgName === demoShell.value?.orgName &&
+      memberSummary.value.orgName !== otherShell.value?.orgName,
+    `resolved to ${brief(memberSummary.value?.orgName ?? memberSummary.errorMessage, 120)}`,
+  )
+
+  // A matching name is cheap. This is the part that costs something: the
+  // member's dues are computed by summing charges and receipts, and if any of
+  // those reads dropped its org filter the total would quietly include another
+  // community's money. Assert the figure is real and the fund list is theirs.
+  const memberFundNames = [
+    ...(memberSummary.value?.dueFunds ?? []),
+    ...(memberSummary.value?.voluntaryFunds ?? []),
+  ]
+  check(
+    "a member's dues are computed inside their own organisation only",
+    memberSummary.status === "success" &&
+      (memberSummary.value?.totalReceivedPaise ?? 0) > 0 &&
+      memberFundNames.length > 0 &&
+      !memberFundNames.some((f) => f.id === otherIds.fundId),
+    `received ${brief(memberSummary.value?.totalReceivedPaise)} paise across ` +
+      `${brief(memberFundNames.map((f) => f.name), 120)}`,
+  )
+
+  const memberForeign = await call(
+    "aggregate:memberPassbook",
+    { memberId: otherIds.memberId },
+    memberToken,
+  )
+  check(
+    "a member cannot read another organisation's passbook",
+    memberForeign.status !== "success" || memberForeign.value === null,
+    `LEAKED: ${brief(memberForeign.value, 250)}`,
+  )
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed.\n`)
 process.exit(fail > 0 ? 1 : 0)

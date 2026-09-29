@@ -89,11 +89,13 @@ bun install
 bun run dev        # Convex backend + Vite together, http://localhost:5173
 bun run typecheck  # tsc -b --noEmit, app + convex
 bun run build      # typecheck + production build into dist/
-bun run check      # 126 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions, the CSV export, the static UPI QR
+bun run check      # 139 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions, the CSV export, the static UPI QR, cross-org isolation
 bun run smoke      # all 37 read models return against the seeded data
 bun run measure    # payload per screen, against history
 bun run visual     # every console screen in a real browser, against real data
 bun run visual:portal  # the member portal, on a phone-sized viewport
+bun run visual:signup   # a new community registers, creates its org, and reaches a dashboard
+bun run visual:import   # a historical CSV is validated, imported, and read back off the dashboard
 bun run visual:ui      # the palette, in both themes, measured for contrast
 bun run visual:recovery # kill the browser mid-run and prove the suite survives
 ```

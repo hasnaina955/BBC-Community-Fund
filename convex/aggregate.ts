@@ -555,6 +555,17 @@ export const bankPassbook = query({
   },
   handler: async (ctx, args) => {
     const actor = await requireMember(ctx)
+
+    // Checked up front, like fundDetail and memberPassbook. Without it this
+    // query was safe by accident rather than by construction: every read below
+    // is scoped to `actor.orgId` and then filtered by `args.bankId`, so a
+    // foreign id returned a well-shaped, correctly-zeroed passbook instead of a
+    // refusal. Nothing leaked — but "no leak" and "asked the wrong org and got
+    // an empty answer" are indistinguishable to a caller, and the next person
+    // to loosen the filtering below loses the guarantee silently.
+    const bank = await ctx.db.get(args.bankId)
+    if (!bank || bank.orgId !== actor.orgId) return null
+
     const balances = await readAllBalances(ctx.db, actor.orgId)
     const year = args.year ?? CURRENT_YEAR
 

@@ -16,12 +16,14 @@ import type * as data from "../data.js";
 import type * as funds from "../funds.js";
 import type * as gateway from "../gateway.js";
 import type * as http from "../http.js";
+import type * as imports from "../imports.js";
 import type * as lib_arrears from "../lib/arrears.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_authz from "../lib/authz.js";
 import type * as lib_balances from "../lib/balances.js";
 import type * as lib_collection from "../lib/collection.js";
 import type * as lib_funds from "../lib/funds.js";
+import type * as lib_importcsv from "../lib/importcsv.js";
 import type * as lib_ledger from "../lib/ledger.js";
 import type * as lib_money from "../lib/money.js";
 import type * as lib_notify from "../lib/notify.js";
@@ -30,11 +32,13 @@ import type * as lib_payments from "../lib/payments.js";
 import type * as lib_reminders from "../lib/reminders.js";
 import type * as lib_sequence from "../lib/sequence.js";
 import type * as members from "../members.js";
+import type * as orgs from "../orgs.js";
 import type * as portal from "../portal.js";
 import type * as receipts from "../receipts.js";
 import type * as reconciliation from "../reconciliation.js";
 import type * as reminders from "../reminders.js";
 import type * as seed from "../seed.js";
+import type * as seedSecondOrg from "../seedSecondOrg.js";
 import type * as transactions from "../transactions.js";
 
 import type {
@@ -52,12 +56,14 @@ declare const fullApi: ApiFromModules<{
   funds: typeof funds;
   gateway: typeof gateway;
   http: typeof http;
+  imports: typeof imports;
   "lib/arrears": typeof lib_arrears;
   "lib/audit": typeof lib_audit;
   "lib/authz": typeof lib_authz;
   "lib/balances": typeof lib_balances;
   "lib/collection": typeof lib_collection;
   "lib/funds": typeof lib_funds;
+  "lib/importcsv": typeof lib_importcsv;
   "lib/ledger": typeof lib_ledger;
   "lib/money": typeof lib_money;
   "lib/notify": typeof lib_notify;
@@ -66,11 +72,13 @@ declare const fullApi: ApiFromModules<{
   "lib/reminders": typeof lib_reminders;
   "lib/sequence": typeof lib_sequence;
   members: typeof members;
+  orgs: typeof orgs;
   portal: typeof portal;
   receipts: typeof receipts;
   reconciliation: typeof reconciliation;
   reminders: typeof reminders;
   seed: typeof seed;
+  seedSecondOrg: typeof seedSecondOrg;
   transactions: typeof transactions;
 }>;
 

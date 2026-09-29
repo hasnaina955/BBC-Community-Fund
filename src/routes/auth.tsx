@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Navigate, useNavigate, useSearchParams } from "react-router-dom"
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom"
 import { useConvexAuth, useAuthActions } from "@convex-dev/auth/react"
 import { AlertCircle, Loader2, Lock } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -148,6 +148,16 @@ export default function Auth() {
             </form>
           </CardContent>
         </Card>
+
+        <p className="text-center text-sm text-muted-foreground">
+          Setting up a new community?{" "}
+          <Link
+            to="/signup"
+            className="font-medium text-foreground underline underline-offset-4"
+          >
+            Create an account
+          </Link>
+        </p>
 
         <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
           <p className="font-medium text-foreground">Demo accounts</p>
