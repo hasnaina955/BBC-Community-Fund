@@ -1228,6 +1228,230 @@ check(
   JSON.stringify(parseCsv(toCsv(HOSTILE_COLUMNS, [hostile[2]]))[1]?.[4]),
 )
 
+/* ------------------------------------------- importing a membership list ----
+ *
+ * M6 added the fourth import kind: the community's roster, which until then had
+ * to be typed in one cousin at a time. Both halves of it are pure functions and
+ * are driven directly here rather than through a deployment:
+ *
+ *   1. `convex/lib/importcsv.ts` — what kind of file this is, and what is wrong
+ *      with it, row by row.
+ *   2. `convex/lib/roster.ts` — whether a row describes somebody the roster
+ *      already has.
+ *
+ * The second is the one worth asserting hardest, because both of its failure
+ * modes look like success: adding everybody twice, and quietly dropping the one
+ * person the treasurer was actually uploading. These are the modules the app
+ * imports, not copies.
+ */
+
+const { parseImport, detectKind } = await import("../convex/lib/importcsv.ts")
+const { planRoster, rosterKeys, isOnRoster, phoneKey } = await import(
+  "../convex/lib/roster.ts",
+)
+
+console.log("\nM6 — a membership list, and who is already on the roster")
+
+/** A parsed member row, as `planRoster` receives it. */
+const memberRow = (row, name, email = null, phone = null) => ({
+  row,
+  name,
+  email,
+  phone,
+  relation: null,
+  joinedYear: null,
+  joinedMonth: null,
+})
+
+/* -- what the file is ---------------------------------------------------- */
+
+check(
+  "a name and an address are recognised as a membership list",
+  detectKind(["name", "email", "phone"]) === "members",
+  `read as ${detectKind(["name", "email", "phone"])}`,
+)
+check(
+  "a membership list is still one with a Joined column, not a ledger",
+  detectKind(["Name", "Joined", "Phone"]) === "members",
+  `read as ${detectKind(["Name", "Joined", "Phone"])} — the ledger signature is any: ["date"]`,
+)
+check(
+  "a contribution grid that also carries a name column is still a grid",
+  detectKind(["name", "member", "year", "month", "amount"]) === "contributions",
+  `read as ${detectKind(["name", "member", "year", "month", "amount"])} — the grid is tested first for exactly this file`,
+)
+check(
+  "a payment register is still a payment register",
+  detectKind(["amount", "paid_at", "method"]) === "payments",
+  `read as ${detectKind(["amount", "paid_at", "method"])}`,
+)
+
+/* -- only a name is required, and a name can contain a comma ------------- */
+
+const rosterCsv = parseImport(
+  'name,email,joined\n"Ali, Mohammad",ali@example.org,09/03/2019\nAyesha Khan,,2019\n',
+)
+check(
+  "a roster needs nothing but a name, so a sheet with no email column works",
+  rosterCsv.issues.length === 0 && rosterCsv.rows.length === 2,
+  `issues: ${JSON.stringify(rosterCsv.issues)}`,
+)
+check(
+  "a name containing a comma is one name, not two columns",
+  rosterCsv.rows[0]?.name === "Ali, Mohammad",
+  JSON.stringify(rosterCsv.rows[0]?.name),
+)
+check(
+  "a joined date gives the year and the month",
+  rosterCsv.rows[0]?.joinedYear === 2019 && rosterCsv.rows[0]?.joinedMonth === 3,
+  JSON.stringify([rosterCsv.rows[0]?.joinedYear, rosterCsv.rows[0]?.joinedMonth]),
+)
+check(
+  "a Joined column holding only a year is a year, not a malformed date",
+  rosterCsv.rows[1]?.joinedYear === 2019 && rosterCsv.rows[1]?.joinedMonth === null,
+  JSON.stringify([rosterCsv.rows[1]?.joinedYear, rosterCsv.rows[1]?.joinedMonth]),
+)
+check(
+  "a row that does not say when somebody joined is not given a date by the parser",
+  parseImport("name\nAyesha Khan\n").rows[0]?.joinedYear === null,
+  "the default depends on the organisation's books, so the parser must not invent one",
+)
+
+/* -- what is wrong with the file, reported by row ------------------------ */
+
+const badEmail = parseImport("name,email\nAyesha Khan,not-an-address\n")
+check(
+  "an address that is not an address is refused, against its own row",
+  badEmail.issues.length === 1 &&
+    badEmail.issues[0].row === 2 &&
+    badEmail.issues[0].field === "email",
+  JSON.stringify(badEmail.issues),
+)
+const shortName = parseImport("name\nX\n")
+check(
+  "a one-character name is refused, as the member form refuses it",
+  shortName.issues.length === 1 && shortName.rows.length === 0,
+  JSON.stringify(shortName.issues),
+)
+const cased = parseImport("name,email\nAyesha Khan,Ayesha@Example.ORG\n")
+check(
+  "an address is lowercased on the way in, because the portal claims on an exact match",
+  cased.rows[0]?.email === "ayesha@example.org",
+  JSON.stringify(cased.rows[0]?.email),
+)
+
+/* -- who the roster already has ------------------------------------------ */
+
+const emptyRoster = rosterKeys([])
+const first = planRoster(
+  [memberRow(2, "Ayesha Khan", "a@example.org"), memberRow(3, "Mohammed Ali")],
+  emptyRoster,
+  [],
+)
+check(
+  "a first import adds everybody",
+  first.usable.length === 2 && first.skipped.length === 0,
+  JSON.stringify({ kept: first.usable.length, skipped: first.skipped }),
+)
+
+const afterImport = rosterKeys([
+  { name: "Ayesha Khan", email: "a@example.org" },
+  { name: "Mohammed Ali" },
+])
+const reRun = planRoster(
+  [memberRow(2, "Ayesha Khan", "a@example.org"), memberRow(3, "Mohammed Ali")],
+  afterImport,
+  [],
+)
+check(
+  "re-importing the same roster adds nobody — a roster is not made safe by a file hash",
+  reRun.usable.length === 0 && reRun.skipped.length === 2,
+  JSON.stringify({ kept: reRun.usable.length, skipped: reRun.skipped }),
+)
+check(
+  "and every skip is named, so nobody disappears without a trace",
+  reRun.skipped.includes("Mohammed Ali") &&
+    reRun.skipped.some((s) => s.includes("a@example.org")),
+  JSON.stringify(reRun.skipped),
+)
+
+const corrected = planRoster(
+  [
+    memberRow(2, "Ayesha Khan", "a@example.org"),
+    memberRow(3, "Mohammed Ali"),
+    memberRow(4, "Bilal Sheikh", "bilal@example.org"),
+  ],
+  afterImport,
+  [],
+)
+check(
+  "a corrected roster adds only the people who are new",
+  corrected.usable.length === 1 && corrected.usable[0].name === "Bilal Sheikh",
+  JSON.stringify(corrected.usable.map((r) => r.name)),
+)
+
+const withPhone = rosterKeys([{ name: "Zoya", phone: "+91 98765 43210" }])
+check(
+  "a phone number matches however it was punctuated",
+  phoneKey("+91 98765-43210") === phoneKey("+919876543210") &&
+    isOnRoster(memberRow(2, "Zoya", null, "+919876543210"), withPhone),
+  `${phoneKey("+91 98765-43210")} vs ${phoneKey("+919876543210")}`,
+)
+check(
+  "a row with no address that matches a member by name is treated as that member",
+  isOnRoster(
+    memberRow(2, "Ali Khan"),
+    rosterKeys([{ name: "Ali Khan", email: "ali@x.org" }]),
+  ),
+  "the row carries nothing that could tell one holder of the name from another",
+)
+
+/* -- two rows that cannot be told apart are refused, not guessed at ------ */
+
+const sameNameIssues = []
+planRoster(
+  [memberRow(2, "Mohammed Ali"), memberRow(5, "Mohammed Ali")],
+  emptyRoster,
+  sameNameIssues,
+)
+check(
+  "two rows with one name and no address to tell them apart are refused",
+  sameNameIssues.length === 1 && sameNameIssues[0].row === 5,
+  JSON.stringify(sameNameIssues),
+)
+check(
+  "and the refusal names the row it clashes with, so the fix is obvious",
+  /row 2/.test(sameNameIssues[0]?.message ?? ""),
+  sameNameIssues[0]?.message,
+)
+
+const sameEmailIssues = []
+planRoster(
+  [memberRow(2, "A", "same@x.org"), memberRow(7, "B", "same@x.org")],
+  emptyRoster,
+  sameEmailIssues,
+)
+check(
+  "two rows sharing an address are refused",
+  sameEmailIssues.length === 1 && sameEmailIssues[0].field === "email",
+  JSON.stringify(sameEmailIssues),
+)
+
+const cousinIssues = []
+const cousins = planRoster(
+  [
+    memberRow(2, "Mohammed Ali", "m1@x.org"),
+    memberRow(3, "Mohammed Ali", "m2@x.org"),
+  ],
+  emptyRoster,
+  cousinIssues,
+)
+check(
+  "two members who share a name but not an address are two people, and both are kept",
+  cousins.usable.length === 2 && cousinIssues.length === 0,
+  JSON.stringify({ kept: cousins.usable.length, issues: cousinIssues }),
+)
+
 /* ------------------------------------------------------------------ UPI ----
  *
  * The static UPI QR, and the one property it must never lose.
