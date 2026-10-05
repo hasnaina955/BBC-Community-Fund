@@ -269,6 +269,48 @@ the M5 reminder sort check were both green while testing nothing.
 
 ---
 
+## M6 — a community arrives, and brings its records
+
+Two suites cover the milestone that turned this from one community's tool into a
+product, and they are the only two that build their own community rather than
+signing in as the seeded one.
+
+`bun run visual:signup` (35 assertions) is the only suite that signs nobody in.
+Every other one signs in as an account the seeder wrote, and the seeder writes
+`organizations` *before* `users`, which is the exact order a real community
+cannot happen in. Its load-bearing group is the isolation one: it signs in as the
+demo community's treasurer, in the same browser, and asserts they can see none of
+the new community — not its fund, not its bank passbook, not its money.
+
+`bun run visual:import` (62 assertions) signs up its own community, gives it a
+fund and a bank, imports a spreadsheet into it, and deletes it afterwards. Its
+seventh group is the roster, and it is the one that would not have been written
+without the year-range defect below:
+
+  - a membership list is recognised by `name` alone, so a spreadsheet with no
+    email column imports — the case that made the import worth building;
+  - three of its rows name members that already exist, and are *skipped and
+    named*, not added a second time;
+  - a row that names no join year is dated to the earliest year the books cover;
+  - the same file imported twice adds nobody.
+
+### The year pickers, and why the roster suite asserts on them
+
+The grid and the reports offer a year, and that list came from the earliest
+*member join date*. That was the whole answer for exactly as long as a join date
+was the earliest thing an organisation could know — which stopped being true at
+M6. A community that imported its roster carrying this year and its history
+carrying 2024 would have been offered only this year: eight years of correctly
+imported contributions in the database, and no way to select them. Nothing would
+have failed. The import would have reported success, and the treasurer would have
+concluded the import had not worked.
+
+So the year list is now the earliest year the organisation has any record of —
+the books and the roster together — and the suite imports exactly that pair and
+asserts the picker still reaches 2024. The read is two point lookups on indexes
+that already have the date as their second column, so it does not scan history to
+find out where history starts.
+
 ## Surviving a killed browser
 
 Chromium's renderers in this sandbox are killed by the OOM killer. The first
@@ -528,7 +570,7 @@ that cannot fail is not a test.
 
 `bun run visual:ui` (30 assertions) is a third, separate suite. The other two
 drive a desktop viewport, which is precisely why a console with **no navigation
-at all below the `lg` breakpoint**could pass 273 console assertions, 82 portal assertions, 37 smoke checks and 139 security checks. The sidebar is
+at all below the `lg` breakpoint**could pass 273 console assertions, 82 portal assertions, 37 smoke checks and 163 security checks. The sidebar is
 `hidden lg:flex`; the phone header carried the logo, the theme toggle and a
 sign-out button. A treasurer on a phone could open the app, see the dashboard,
 and reach none of the other twelve routes. Nothing failed, because the app was

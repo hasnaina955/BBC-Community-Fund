@@ -23,8 +23,8 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **M3** | Member portal | M2 | **Done** | A member is self-sufficient |
 | **M4** | Collection | M2, M3 | **Done, by decision** — the committee declined online collection; the desk, the receipts and a static UPI QR are the shipping state | A member can find the account and the QR, and knows to tell the treasurer |
 | **M5** | Reminders and arrears | M4a | Built, unsent — the decision layer, the record and the consent rules are done; dispatch waits on a vendor | Unpaid contributions get chased |
-| **M6** | Multi-tenancy | M2 | In progress | Signup and isolation proven; import and org switcher still open |
-| **M7** | Reports and compliance | M2 | Not started | The committee gets its answer |
+| **M6** | Multi-tenancy | M2 | In progress | Signup, the history and the roster all import; an org switcher and per-org settings are still open |
+| **M7** | Reports and compliance | M2 | Partly built | The reports screen reads real ledger figures; export, statements and certificates are not built |
 | **M8** | Hardening and operations | M3–M7 | Not started | It can be relied on |
 
 > **Critical path: M0 → M1 → M2.** M6 is the highest-risk late dependency —
@@ -581,6 +581,14 @@ lands, CommunityFund is an internal tool for a single organization.
       *(contributions, payments and ledger entries, with a server-side preview
       that reports every problem in the file before anything is written — see
       `convex/imports.ts` and `convex/lib/importcsv.ts`)*
+- [x] Membership list import — a name, and nothing else, is required
+      *(the gap this milestone shipped with: a community could bring its history
+      in but not its people, so a treasurer whose spreadsheet had no email
+      column added their cousins one at a time first. A row is matched to the
+      roster by identity rather than by a hash of the file, so re-importing a
+      corrected roster adds only the people who are new. The rules live in
+      `convex/lib/roster.ts` and are asserted in `bun run check`; the import
+      only ever adds and never edits an existing member)*
 - [ ] Org switcher for users in multiple orgs
 - [ ] Per-org settings and numbering sequences
 - [x] Enforce org isolation in the shared `authz` helper, not per-handler
@@ -598,7 +606,10 @@ lands, CommunityFund is an internal tool for a single organization.
 - [x] Two orgs exist with data that never crosses
 - [x] Every query is provably org-scoped (tested, not assumed)
 - [x] A new community can sign up and be running in under an hour with a CSV import
-      *(both halves are proven end to end and neither touches the seeded data)*
+      *(both halves are proven end to end and neither touches the seeded data.
+      This was ticked while only the history half existed and the roster half did
+      not — the criterion is true as written now, because the members arrive the
+      same way the money does)*
 
 ### Signup, and why it is two screens
 
@@ -736,11 +747,9 @@ bank, fund, member, a paid contribution and three balance rows. It is
 idempotent and returns the existing ids when re-run, so it is a gate that can
 be re-run rather than a one-shot.
 
-**Still open:** a new community can now register, name itself, and bring its
-history in — but it starts with no *members*, only the ones the import names. A
-treasurer whose spreadsheet has no email column has to add their cousins one at
-a time first, and member import is not built. There is also no org switcher, no
-per-org settings, and no data export (deletion is built; export is not).
+**Still open:** no org switcher, no per-org settings, and no data export
+(deletion is built; export is not). A community can now register, name itself,
+and bring both its people and its money in through the same door.
 
 ---
 
@@ -748,18 +757,35 @@ per-org settings, and no data export (deletion is built; export is not).
 
 **Goal:** answer the committee's question.
 
+> **Reconciled with the code on 2026-10-05.** This list was written before the
+> screen existed and was never updated, so it still read as "not started" while
+> `/reports` had been reading real figures from `aggregate:reports` for some
+> time. Items are ticked below only where the code can be pointed at; the rest
+> are left unticked deliberately rather than assumed — the export button on the
+> screen is still `disabled` with `Available in milestone M7` on it, which is
+> the honest state of it.
+
 ### Scope
 
-- [ ] Real `/reports` implementation (the original had a route and no data)
+- [x] Real `/reports` implementation (the original had a route and no data)
+      *(`src/routes/reports.tsx`, reading one `aggregate:reports` call per year)*
 - [ ] Income and expenditure by fund, category, and month
-- [ ] Collection efficiency: collected vs. expected, per month
-- [ ] Outstanding arrears with aging
-- [ ] Fund progress against target
+      *(expenditure by category and collection by month are built; income and
+      expenditure per fund are not separated)*
+- [x] Collection efficiency: collected vs. expected, per month
+- [x] Outstanding arrears with aging
+      *(the ageing buckets, and only for funds that actually have dues — a
+      member who gave nothing to the Friday collection owes nothing)*
+- [x] Fund progress against target
 - [ ] CSV and PDF export
 - [ ] Annual member statement
-- [ ] Audit log UI — the endpoint that never existed
+      *(the member portal prints a running passbook of one member's own record;
+      an annual statement for the committee is not built)*
+- [x] Audit log UI — the endpoint that never existed
+      *(`aggregate:audit` exists and the Settings screen reads it)*
 - [ ] Year-end close report
 - [ ] Contribution certificates
+      *(nothing in the codebase mentions one)*
 - [ ] Zakat and charity fund reporting, kept distinct per the fund type
 
 ### Exit criteria

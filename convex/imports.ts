@@ -141,7 +141,13 @@ async function loadRefs(
     memberCount: members.length,
     // Passed the roster we just read, so this costs two point lookups and
     // not a second read of the membership.
-    earliestYear: await earliestYearOnRecord(ctx, orgId, members),
+    //
+    // Floored at 2000 because that is the earliest year a member row can
+    // hold (`assertYear`), and an organisation whose *books* reach further
+    // back would otherwise be handed a join year the member record refuses —
+    // failing the whole roster over a date nobody typed. The floor is applied
+    // here, once, so the year the warning names is the year that is stored.
+    earliestYear: Math.max(await earliestYearOnRecord(ctx, orgId, members), 2000),
   }
 }
 

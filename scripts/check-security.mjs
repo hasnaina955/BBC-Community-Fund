@@ -1311,6 +1311,24 @@ check(
   rosterCsv.rows[1]?.joinedYear === 2019 && rosterCsv.rows[1]?.joinedMonth === null,
   JSON.stringify([rosterCsv.rows[1]?.joinedYear, rosterCsv.rows[1]?.joinedMonth]),
 )
+// A member row cannot store a year outside 2000..2100 (`assertYear`), so a file
+// that says 1995 has to be refused by the *preview*, against the row. Caught at
+// commit time it would fail the entire file with one message about a year.
+const ancientYear = parseImport("name,joined_year\nAyesha Khan,1995\n")
+check(
+  "a join year the member record cannot hold is refused against its own row",
+  ancientYear.issues.length === 1 &&
+    ancientYear.issues[0].field === "joined_year" &&
+    ancientYear.rows.length === 0,
+  JSON.stringify(ancientYear.issues),
+)
+const ancientDate = parseImport("name,joined\nAyesha Khan,01/01/1995\n")
+check(
+  "and the same year written as a date is refused too, against the joined column",
+  ancientDate.issues.length === 1 && ancientDate.issues[0].field === "joined",
+  JSON.stringify(ancientDate.issues),
+)
+
 check(
   "a row that does not say when somebody joined is not given a date by the parser",
   parseImport("name\nAyesha Khan\n").rows[0]?.joinedYear === null,

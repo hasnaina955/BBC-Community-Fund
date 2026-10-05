@@ -640,6 +640,19 @@ export function parseImport(
         }
       }
 
+      // A member row cannot store a year outside 2000..2100 — `assertYear`
+      // in lib/money.ts refuses it on the way in. It is caught here, where it
+      // is reported against the row, rather than at commit time, where it
+      // would fail the entire file with a single message about a year.
+      if (joinedYear !== null && (joinedYear < 2000 || joinedYear > 2100)) {
+        issues.push({
+          row,
+          field: joinedYearRaw ? "joined_year" : "joined",
+          message: `a member cannot join in ${joinedYear} — the member record holds a year between 2000 and 2100`,
+        })
+        return
+      }
+
       rows.push({
         row,
         name,
