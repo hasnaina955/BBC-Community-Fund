@@ -13,6 +13,7 @@ import { ageDues, oldestDuePerMember } from "./lib/arrears"
 import { entriesBetween, nextYearStart, yearStart } from "./lib/ledger"
 import { modeOf, hasDues, isUnscheduled, type CollectionMode } from "./lib/funds"
 import { MONTHS_SHORT, sumPaise } from "./lib/money"
+import { CURRENT_YEAR, earliestYearOnRecord } from "./lib/years"
 
 /**
  * Read models that return **computed results**, not rows.
@@ -35,8 +36,9 @@ import { MONTHS_SHORT, sumPaise } from "./lib/money"
  * `fixed_monthly` funds. See lib/funds.ts.
  */
 
+// `CURRENT_YEAR` comes from lib/years.ts so that the dashboard and the import
+// default cannot disagree about which year it is.
 const NOW = new Date()
-const CURRENT_YEAR = NOW.getFullYear()
 const CURRENT_MONTH = NOW.getMonth() + 1
 const MONTHS_ELAPSED = CURRENT_MONTH
 
@@ -187,13 +189,14 @@ export const shell = query({
       bankCount: banks.length,
       arrearsCount: new Set(realArrears.map((c) => c.memberId)).size,
       funds: fundList,
-      // Which years the grid and report pickers may offer. Derived from the
-      // members (84 rows) rather than the ledger, so it costs nothing.
+      // Which years the grid and report pickers may offer: the earliest year
+      // this organisation has any record of. It was the earliest member join
+      // date, which stopped being the whole answer at M6 — an organisation that
+      // imports its roster and then its history would otherwise be offered only
+      // the current year, with the imported years unreachable. The roster is
+      // already loaded here, so only the two point lookups are new.
       yearRange: {
-        from: members.reduce(
-          (min, m) => Math.min(min, m.joinedYear),
-          CURRENT_YEAR,
-        ),
+        from: await earliestYearOnRecord(ctx, actor.orgId, members),
         to: CURRENT_YEAR,
       },
     }
