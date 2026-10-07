@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
-import { Lock, Settings as SettingsIcon, ShieldAlert } from "lucide-react"
+import { Download, Loader2, Lock, Settings as SettingsIcon, ShieldAlert } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,10 +11,12 @@ import { PageHeader } from "@/components/shared/page-header"
 import { EmptyState } from "@/components/shared/stat-card"
 import { CollectionModeBadge } from "@/components/shared/status-badge"
 import { ReadModelLoader } from "@/components/shared/read-model"
-import { useAuditLog, useFunds } from "@/data/queries"
+import { useAuditLog, useExportFile, useExportFiles, useFunds } from "@/data/queries"
 import { useCurrentUser } from "@/data/store"
 import { formatDateTime, formatPaise } from "@/lib/format"
 import { COLLECTION_MODE_HINTS, COLLECTION_MODE_LABELS } from "@/lib/types"
+import { downloadCsv, toCsv, type CsvValue } from "@/lib/csv"
+import type { ExportKey } from "../../convex/lib/exportfiles"
 
 /**
  * The admin screen. The organisation name comes from the signed-in session, the
@@ -27,6 +30,29 @@ export default function Settings() {
   const me = useCurrentUser()
   const fundsModel = useFunds()
   const auditModel = useAuditLog()
+  const exportFiles = useExportFiles()
+
+  // The one file the treasurer has asked for, if any. Nothing is fetched until
+  // a button is pressed: this is the only query in the app that returns history
+  // by design, so it must not run to draw a screen.
+  const [wanted, setWanted] = useState<ExportKey | null>(null)
+  const [outcome, setOutcome] = useState<string | null>(null)
+  const exportFile = useExportFile(wanted)
+
+  useEffect(() => {
+    if (!wanted || !exportFile) return
+    // Through the one CSV writer, so the file gets the BOM, the CRLF records
+    // and the formula guard without this screen knowing about any of them.
+    const columns = exportFile.columns.map((header) => ({
+      header,
+      value: (row: Record<string, CsvValue>) => row[header],
+    }))
+    downloadCsv(exportFile.filename, toCsv(columns, exportFile.rows))
+    setOutcome(
+      `${exportFile.filename} — ${exportFile.rows.length} row${exportFile.rows.length === 1 ? "" : "s"} downloaded.`,
+    )
+    setWanted(null)
+  }, [wanted, exportFile])
 
   if (me.role !== "admin") {
     return (
@@ -184,6 +210,75 @@ export default function Settings() {
             Intentionally absent. Financial records are corrected by reversing
             entries, never by deletion.
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Download className="size-4" />
+            Your data
+          </CardTitle>
+          <CardDescription>
+            Download the community's records as CSV. One file at a time — the
+            ledger is every entry this community has ever made, and fetching all
+            of it to draw a screen is exactly what milestone M2b spent its time
+            removing.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {exportFiles === undefined ? (
+            <ReadModelLoader label="Loading the file list" />
+          ) : (
+            <ul className="space-y-2">
+              {exportFiles.map((f) => (
+                <li
+                  key={f.key}
+                  className="flex items-start justify-between gap-3 rounded-lg border p-3"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-sm font-medium">{f.title}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {f.description}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {f.readsBackAs ? (
+                        <>
+                          Imports back into another organisation as a{" "}
+                          <span className="font-medium text-foreground">
+                            {f.readsBackAs}
+                          </span>{" "}
+                          file.
+                        </>
+                      ) : (
+                        <>Not importable — {f.notImportableBecause}.</>
+                      )}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    disabled={wanted === f.key}
+                    onClick={() => {
+                      setOutcome(null)
+                      setWanted(f.key)
+                    }}
+                  >
+                    {wanted === f.key ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Download className="size-3.5" />
+                    )}
+                    CSV
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {outcome ? (
+            <p className="text-xs text-muted-foreground">{outcome}</p>
+          ) : null}
         </CardContent>
       </Card>
 
