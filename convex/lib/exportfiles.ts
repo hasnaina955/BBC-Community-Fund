@@ -1,4 +1,9 @@
-import { COLUMNS, type ImportKind } from "./importcsv"
+// Type-only, and that is load-bearing: this module is imported directly by
+// the check suite to assert the column contract below, and a *value* import of
+// `./importcsv` would make it unresolvable to a plain node process — the same
+// reason `lib/roster.ts` type-imports its row shapes. The contract is asserted
+// there rather than derived here.
+import type { ImportKind } from "./importcsv"
 
 /**
  * The files a community can take away with it.
@@ -59,16 +64,6 @@ export interface ExportFile {
   columns: string[]
 }
 
-/**
- * The columns an import kind reads, in the order its template lists them.
- *
- * Exported so the check suite can hold every re-importable file to it: the
- * required columns must all be present, and every column written must be one the
- * import understands — a column it ignores is data a round trip would drop.
- */
-export function importColumns(kind: ImportKind): string[] {
-  return [...COLUMNS[kind].required, ...COLUMNS[kind].optional]
-}
 
 /**
  * The files, in the order the screen offers them: the three the import reads

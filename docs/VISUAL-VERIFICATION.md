@@ -294,6 +294,14 @@ without the year-range defect below:
   - a row that names no join year is dated to the earliest year the books cover;
   - the same file imported twice adds nobody.
 
+`bun run check` also drives the other half of this item — taking the records
+away — without a browser and without a deployment. The export offers eight
+CSV files; three of them are the inverse of the import, and the suite holds
+each one to the import's own column list and then writes a file through the
+one CSV writer and reads it back through the real parser. It found that the
+import advertised a `source` column it never read, so a re-imported payment
+arrived relabelled as an opening balance.
+
 ### The year pickers, and why the roster suite asserts on them
 
 The grid and the reports offer a year, and that list came from the earliest
@@ -570,7 +578,7 @@ that cannot fail is not a test.
 
 `bun run visual:ui` (30 assertions) is a third, separate suite. The other two
 drive a desktop viewport, which is precisely why a console with **no navigation
-at all below the `lg` breakpoint**could pass 273 console assertions, 82 portal assertions, 37 smoke checks and 163 security checks. The sidebar is
+at all below the `lg` breakpoint**could pass 273 console assertions, 82 portal assertions, 37 smoke checks and 190 security checks. The sidebar is
 `hidden lg:flex`; the phone header carried the logo, the theme toggle and a
 sign-out button. A treasurer on a phone could open the app, see the dashboard,
 and reach none of the other twelve routes. Nothing failed, because the app was

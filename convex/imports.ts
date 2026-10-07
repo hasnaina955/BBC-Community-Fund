@@ -867,7 +867,12 @@ export const runImport = mutation({
         // stamps everything today produces a passbook with eight years of
         // movements on one day, which is the opposite of what was asked for.
         effectiveDate: plan.row.date,
-        source: "opening",
+        // What the file says the entry was. This used to be `"opening"` for
+        // every row, which meant a re-imported payment arrived relabelled as an
+        // opening balance — a column the contract advertised and the parser
+        // silently dropped. `opening` is still the default for a row that does
+        // not say, which is the case this import exists for.
+        source: plan.row.source,
         refType: "import",
         refId,
         note: plan.row.note ?? "Imported from the community's records",

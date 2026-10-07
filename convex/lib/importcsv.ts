@@ -481,11 +481,27 @@ export interface LedgerRow {
   amountPaise: number
   date: string
   category: string | null
+  source: (typeof LEDGER_SOURCES)[number]
   note: string | null
 }
 
 const CONTRIBUTION_STATUS = ["due", "paid", "partial", "waived"] as const
 const PAYMENT_METHOD = ["cash", "cheque", "upi", "card", "transfer"] as const
+/**
+ * What produced an entry, matching the schema. The import used to ignore this
+ * column and stamp every row `opening`, which was a column the contract
+ * advertised and the parser dropped — so a round trip turned a payment into an
+ * opening balance. `opening` stays the default, because importing a
+ * community's starting position is what this file is for.
+ */
+const LEDGER_SOURCES = [
+  "opening",
+  "transaction",
+  "payment",
+  "correction",
+  "transfer",
+] as const
+
 const LEDGER_CATEGORIES = [
   "operations",
   "emergency",
@@ -756,6 +772,14 @@ export function parseImport(
       issues,
       "other",
     )
+    const source = parseEnum(
+      get(record, "source"),
+      LEDGER_SOURCES,
+      row,
+      "source",
+      issues,
+      "opening",
+    )
     const fund = get(record, "fund") || null
     const bank = get(record, "bank") || null
     const member = get(record, "member") || null
@@ -766,7 +790,7 @@ export function parseImport(
         message: "name a fund, a bank account or a member — an entry with no target moves no balance",
       })
     }
-    if (amountPaise === null || !date || !category) return
+    if (amountPaise === null || !date || !category || !source) return
     if (amountPaise === 0) {
       issues.push({ row, field: "amount", message: "a ledger entry cannot be zero" })
       return
@@ -779,6 +803,7 @@ export function parseImport(
       amountPaise,
       date,
       category,
+      source,
       note: get(record, "note") || null,
     })
   })

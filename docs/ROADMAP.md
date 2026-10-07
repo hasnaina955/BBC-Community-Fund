@@ -23,7 +23,7 @@ Related: [Product brief](PRODUCT.md) · [Architecture](ARCHITECTURE.md) ·
 | **M3** | Member portal | M2 | **Done** | A member is self-sufficient |
 | **M4** | Collection | M2, M3 | **Done, by decision** — the committee declined online collection; the desk, the receipts and a static UPI QR are the shipping state | A member can find the account and the QR, and knows to tell the treasurer |
 | **M5** | Reminders and arrears | M4a | Built, unsent — the decision layer, the record and the consent rules are done; dispatch waits on a vendor | Unpaid contributions get chased |
-| **M6** | Multi-tenancy | M2 | In progress | Signup, the history and the roster all import; an org switcher and per-org settings are still open |
+| **M6** | Multi-tenancy | M2 | In progress | Signup, the history and the roster import, and the records can be taken away again; an org switcher and per-org settings are still open |
 | **M7** | Reports and compliance | M2 | Partly built | The reports screen reads real ledger figures; export, statements and certificates are not built |
 | **M8** | Hardening and operations | M3–M7 | Not started | It can be relied on |
 
@@ -597,8 +597,25 @@ lands, CommunityFund is an internal tool for a single organization.
       `requireMember` name so a query added later cannot pick up the weaker
       gate)*
 - [~] Data export and account deletion for a departing org
-      *(deletion is built — `orgs.deleteOrganization` purges every org-scoped
-      table in one transaction; the export half is not)*
+      *(both halves are built now. `orgs.deleteOrganization` purges every
+      org-scoped table in one transaction, and the Settings screen offers the
+      community's records as eight CSV files — one at a time, because an export
+      is the one screen that has to send the history by definition. Three of
+      them are the inverse of the import, and `bun run check` holds them to it.
+      Deletion still has no screen of its own and is a mutation the suites
+      call: a button that destroys a community's books should not be one click
+      away, and the Destructive actions card says so)*
+- [ ] Link a settled month to the payment that settled it
+      *(found while building the export, and the reason `contributions.csv`
+      cannot be re-imported. A month's status is set two ways — a payment
+      settles the oldest unpaid month, or a treasurer marks a month paid
+      outright from the grid — and neither writes down which payment did it.
+      So a paid month is a claim about money with no receipt attached, and a
+      re-import would have to invent the date it was paid. It also means no
+      report can say *when* a month was settled, which is what an annual
+      member statement wants. The fix is a field on `contributions` written by
+      `recordPaymentFor`, plus a backfill that can only be derived from the
+      payment order — a money-path change, so it wants the suites runnable)*
 - [x] Cross-org access test suite
 
 ### Exit criteria

@@ -70,8 +70,16 @@ for (const path of [
   "aggregate:directory",
   "aggregate:audit",
   "data:me",
+  "exports:files",
+  "exports:file",
 ]) {
-  const res = await call(path, path === "aggregate:grid" ? { year: 2026 } : {})
+  const args =
+    path === "aggregate:grid"
+      ? { year: 2026 }
+      : path === "exports:file"
+        ? { key: "members" }
+        : {}
+  const res = await call(path, args)
   check(
     `${path} refuses an anonymous caller`,
     res.status === "error" && /Not signed in/i.test(res.errorMessage ?? ""),
@@ -102,6 +110,14 @@ for (const forged of [
 
 const admin = await signIn("secretary@jamaat.org")
 const viewer = await signIn("farhan@jamaat.org")
+
+const viewerExport = await call("exports:file", { key: "ledger" }, viewer)
+check(
+  "a viewer cannot export the books",
+  viewerExport.status === "error" &&
+    /treasurer access required/i.test(viewerExport.errorMessage ?? ""),
+  viewerExport.errorMessage ?? "ALLOWED",
+)
 
 const viewerFund = await call(
   "funds:createFund",
@@ -1468,6 +1484,241 @@ check(
   "two members who share a name but not an address are two people, and both are kept",
   cousins.usable.length === 2 && cousinIssues.length === 0,
   JSON.stringify({ kept: cousins.usable.length, issues: cousinIssues }),
+)
+
+/* ------------------------------------------- taking the records away (M6) ---
+ *
+ * The export half of the last M6 item. Three of the eight files it offers are
+ * the *inverse* of the import, and that is a claim worth asserting rather than
+ * believing. `convex/lib/importcsv.ts` says in as many words that "the round trip
+ * is asserted in the check suite" — and until now it was asserted against
+ * `src/lib/csv.ts`'s own reader, not against the parser that reads a treasurer's
+ * file. Those are two different functions, and only one of them is on the path a
+ * real spreadsheet takes.
+ *
+ * So this drives the real pair: the export's column list, through the one CSV
+ * writer, into the import parser. It needs no deployment, which is the point —
+ * the column list is a contract with the import, and a contract that can only be
+ * checked against a backend is one nobody checks.
+ */
+
+const { EXPORT_FILES } = await import("../convex/lib/exportfiles.ts")
+const { COLUMNS } = await import("../convex/lib/importcsv.ts")
+
+/** The columns a kind reads, in the order its template lists them. */
+const importColumns = (kind) => [...COLUMNS[kind].required, ...COLUMNS[kind].optional]
+
+console.log("\nM6 — taking the records away")
+
+/** The screen's own mapping: the file's columns, read off each row by name. */
+const columnsFor = (file) =>
+  file.columns.map((header) => ({ header, value: (row) => row[header] }))
+
+const reImportable = EXPORT_FILES.filter((f) => f.readsBackAs !== null)
+
+check(
+  "the export offers files, and says which can go back in",
+  EXPORT_FILES.length >= 4 && reImportable.length >= 3,
+  `${EXPORT_FILES.length} files, ${reImportable.length} re-importable`,
+)
+check(
+  "every file has its own key and its own filename",
+  new Set(EXPORT_FILES.map((f) => f.key)).size === EXPORT_FILES.length &&
+    new Set(EXPORT_FILES.map((f) => f.filename)).size === EXPORT_FILES.length,
+  EXPORT_FILES.map((f) => f.filename).join(", "),
+)
+check(
+  "a file that cannot be imported says why, so the screen cannot omit it",
+  EXPORT_FILES.filter((f) => f.readsBackAs === null).every(
+    (f) => typeof f.notImportableBecause === "string" && f.notImportableBecause.length > 20,
+  ),
+  EXPORT_FILES.filter((f) => f.readsBackAs === null)
+    .map((f) => `${f.key}: ${f.notImportableBecause}`)
+    .join(" | "),
+)
+
+// The contract with the import, in both directions.
+for (const file of reImportable) {
+  const accepted = importColumns(file.readsBackAs)
+  const required = COLUMNS[file.readsBackAs].required
+  check(
+    `${file.filename} carries every column the ${file.readsBackAs} import requires`,
+    required.every((c) => file.columns.includes(c)),
+    `missing ${required.filter((c) => !file.columns.includes(c)).join(", ") || "nothing"}`,
+  )
+  check(
+    `and writes nothing the ${file.readsBackAs} import would ignore`,
+    file.columns.every((c) => accepted.includes(c)),
+    `not accepted: ${file.columns.filter((c) => !accepted.includes(c)).join(", ") || "none"}`,
+  )
+}
+
+/* -- the round trip, on the real parser ---------------------------------- */
+
+const membersFile = EXPORT_FILES.find((f) => f.key === "members")
+const paymentsFile = EXPORT_FILES.find((f) => f.key === "payments")
+const ledgerFile = EXPORT_FILES.find((f) => f.key === "ledger")
+
+const SAMPLES = {
+  members: {
+    name: "Ali, Mohammad",
+    email: "Ali@Example.ORG",
+    phone: "+91 98765 43210",
+    relation: "Brother",
+    joined_year: 2019,
+    joined_month: 3,
+  },
+  payments: {
+    amount: 150.5,
+    paid_at: "2024-03-09T12:00:00.000Z",
+    member: "Imran Shaikh",
+    fund: "Monthly subscription",
+    bank: "HDFC Bank",
+    method: "cash",
+    receipt: "R-00042",
+    reference: "Imported",
+  },
+  ledger: {
+    // Negative is a debit — the sign is what `postEntry` reads.
+    amount: -1250.5,
+    date: "2024-03-09",
+    fund: "Monthly subscription",
+    bank: "HDFC Bank",
+    member: "Imran Shaikh",
+    category: "other",
+    note: "Bank charges",
+    source: "payment",
+  },
+}
+
+/** Write a file the way the screen writes it, then read it back the way the
+ *  import reads it. */
+function roundTrip(file, row) {
+  const csv = toCsv(columnsFor(file), [row])
+  const parsed = parseImport(csv)
+  return { csv, parsed, row: parsed.rows[0] }
+}
+
+const trips = [
+  [membersFile, SAMPLES.members, roundTrip(membersFile, SAMPLES.members)],
+  [paymentsFile, SAMPLES.payments, roundTrip(paymentsFile, SAMPLES.payments)],
+  [ledgerFile, SAMPLES.ledger, roundTrip(ledgerFile, SAMPLES.ledger)],
+]
+
+for (const [file, , trip] of trips) {
+  check(
+    `${file.filename} is recognised as a ${file.readsBackAs} file when it comes back`,
+    trip.parsed.kind === file.readsBackAs && trip.parsed.issues.length === 0,
+    trip.parsed.kind === file.readsBackAs
+      ? JSON.stringify(trip.parsed.issues)
+      : `read as ${trip.parsed.kind}`,
+  )
+}
+
+const [, , membersTrip] = trips[0]
+const [, , paymentsTrip] = trips[1]
+const [, , ledgerTrip] = trips[2]
+
+check(
+  "a name containing a comma is still one name",
+  membersTrip.row?.name === "Ali, Mohammad",
+  JSON.stringify(membersTrip.row?.name),
+)
+check(
+  "the address is lowercased, which is how the portal claims a record",
+  membersTrip.row?.email === "ali@example.org",
+  JSON.stringify(membersTrip.row?.email),
+)
+check(
+  "the phone number keeps its punctuation and the join date keeps its month",
+  membersTrip.row?.phone === "+91 98765 43210" &&
+    membersTrip.row?.joinedYear === 2019 &&
+    membersTrip.row?.joinedMonth === 3,
+  JSON.stringify([
+    membersTrip.row?.phone,
+    membersTrip.row?.joinedYear,
+    membersTrip.row?.joinedMonth,
+  ]),
+)
+
+check(
+  "a rupee amount with paise arrives as paise, not rounded",
+  paymentsTrip.row?.amountPaise === 15050,
+  JSON.stringify(paymentsTrip.row?.amountPaise),
+)
+check(
+  "the payment date is preserved to the day",
+  paymentsTrip.row?.paidAt === "2024-03-09",
+  JSON.stringify(paymentsTrip.row?.paidAt),
+)
+check(
+  "and the receipt number, the method and the names all survive",
+  paymentsTrip.row?.receipt === "R-00042" &&
+    paymentsTrip.row?.method === "cash" &&
+    paymentsTrip.row?.member === "Imran Shaikh" &&
+    paymentsTrip.row?.fund === "Monthly subscription" &&
+    paymentsTrip.row?.bank === "HDFC Bank",
+  JSON.stringify(paymentsTrip.row),
+)
+
+check(
+  "a ledger debit stays negative, because the sign is the direction",
+  ledgerTrip.row?.amountPaise === -125050,
+  JSON.stringify(ledgerTrip.row?.amountPaise),
+)
+check(
+  "and the entry keeps its category, note and what produced it",
+  ledgerTrip.row?.category === "other" &&
+    ledgerTrip.row?.note === "Bank charges" &&
+    ledgerTrip.row?.source === "payment",
+  JSON.stringify([
+    ledgerTrip.row?.category,
+    ledgerTrip.row?.note,
+    ledgerTrip.row?.source,
+  ]),
+)
+check(
+  "a row that does not say what produced it is an opening balance, as before",
+  parseImport(
+    toCsv(columnsFor(ledgerFile), [{ ...SAMPLES.ledger, source: "" }]),
+  ).rows[0]?.source === "opening",
+  "the default is what makes a spreadsheet of starting balances importable",
+)
+
+/* -- the values that fail quietly --------------------------------------- */
+
+const hostileName = '=HYPERLINK("http://phish.example","Verify")'
+const hostileTrip = roundTrip(membersFile, {
+  name: hostileName,
+  email: "",
+  phone: "",
+  relation: "",
+  joined_year: 2024,
+  joined_month: 1,
+})
+check(
+  "a name a spreadsheet would execute is guarded on the way out",
+  hostileTrip.csv.includes("'=HYPERLINK"),
+  hostileTrip.csv.split("\r\n")[1]?.slice(0, 40),
+)
+check(
+  "and the guard is undone on the way back in, so the name is not corrupted",
+  hostileTrip.row?.name === hostileName,
+  JSON.stringify(hostileTrip.row?.name),
+)
+
+const emptyTrip = roundTrip(membersFile, {
+  name: "Ayesha Khan",
+  email: "",
+  phone: "",
+  relation: "",
+  joined_year: 2024,
+  joined_month: 1,
+})
+check(
+  "an empty cell comes back empty rather than as the word null",
+  emptyTrip.row?.email === null && emptyTrip.row?.phone === null,
+  JSON.stringify({ email: emptyTrip.row?.email, phone: emptyTrip.row?.phone }),
 )
 
 /* ------------------------------------------------------------------ UPI ----
