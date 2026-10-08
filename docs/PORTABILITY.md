@@ -24,6 +24,7 @@ Measured on this tree.
 | `scripts/` (verification) | 9,556 lines across 17 scripts — suites, seeders and helpers |
 | Functions | 55 queries, 40 mutations, 0 actions, 4 `internalMutation`, 1 `internalQuery` |
 | Database calls | 188 `.query(...)`, 185 `.withIndex(...)`, 157 `.collect()`, 28 `.first()`, 1 `.order()`, **0 `.paginate()`** |
+| Tables and indexes | 28 tables (22 application + 6 auth), 242 fields, 76 indexes, all now in `db/schema.sql` |
 | Convex types in the app | 103 `Id<"table">`, 37 `v.union`, 3 `Doc<` |
 | Client coupling | 14 files import `convex/react`; 56 `useQuery`/`useMutation` sites; 62 `api.*` references |
 
@@ -31,7 +32,7 @@ Measured on this tree.
 `ctx.scheduler`, no `ctx.storage` (no file uploads), no `cronJobs`, no `ctx.auth`
 in handlers. The whole backend is queries, mutations and the database.
 
-**The schema is ordinary.** Twenty-two tables, 67 indexes, optional fields and
+**The schema is ordinary.** Twenty-eight tables, 76 indexes, optional fields and
 unions. `convex/schema.ts` maps to SQL DDL essentially one-to-one; the 37
 `v.union` validators become `CHECK` constraints or enum types, and `zod` is
 already a dependency for the input side.
@@ -132,8 +133,8 @@ from before the payment that just landed.
 This is the good news, and it is not an accident: the project kept its domain
 logic out of the database layer.
 
-**Ten of the eighteen `lib/` modules never touch a database context — 2,235 lines
-that port verbatim:**
+**Ten of the eighteen `lib/` modules never touch a database context — 2,170 lines
+across nine of them port with no edit at all:**
 
 | File | What it holds |
 | --- | --- |
@@ -147,6 +148,12 @@ that port verbatim:**
 | `lib/exportfiles.ts` | The export column contract |
 | `lib/password.ts` | PBKDF2 hashing and verification |
 | `lib/notify.ts` | The notification seam |
+
+The tenth, `lib/funds.ts` (65 lines), is one line short of verbatim: it takes its
+`FundDoc` and `FundId` types from Convex's generated data model, so the port
+repoints two type aliases at the top of the file and nothing else in it moves. That
+is the honest version of "ports unchanged", and `bun run portability` counts it
+separately rather than folding it into the happy figure.
 
 The other eight (1,266 lines) are the ones with the interesting problems:
 `authz.ts`, `balances.ts`, `ledger.ts`, `collection.ts`, `audit.ts`, `members.ts`,
@@ -203,7 +210,96 @@ Stages 2 and 5 are large but mechanical. The risk is concentrated in stages 3 an
 whether the rest is safe, because it establishes the invariant the money paths are
 then held to.
 
-## 8. What would make this a bad idea
+
+---
+
+## 8. What stages 0–2 actually produced
+
+The plan above was written as a plan. Three of its gates now exist and pass, and
+they are the reason the rest is worth attempting: each one is runnable here, with
+no deployment and no credentials, so the port can be *proved* step by step rather
+than assessed at the end.
+
+| | | |
+| --- | --- | --- |
+| `db/schema.sql` | 28 tables, 298 columns, 76 indexes, 69 foreign keys | Generated from `convex/schema.ts` by `bun run sql:schema` |
+| `bun run sql:check` | **521 assertions** | The DDL against the Convex schema, by reading it back out of Postgres |
+| `bun run sql:invariants` | **9 assertions** | The money invariant, and whether it can fail |
+| `bun run portability` | **25 assertions** | The domain/database boundary, enforced |
+| `bun run port` | all three | Wired into CI, because none of them needs a deployment |
+
+### The schema is generated, not written
+
+Hand-written DDL would be a second copy of the schema, and the two would drift the
+first time somebody added a field — silently, because nothing compares them. So
+`convex/schema.ts` stays the single source, and the check reads the result back out
+of a real Postgres: every table, every column's type and nullability, every index's
+columns in order, and every foreign key. It also asserts that the committed file is
+byte-identical to what the generator produces, which is what makes the file
+trustworthy — without that, the file could be stale and every check below it would
+still pass.
+
+It runs against **PGlite**, Postgres compiled to WebAssembly. No server, no Docker,
+no credentials — which is the whole reason this half of the port can be verified on
+a machine that has none of those.
+
+**Every number becomes `bigint`.** Convex's number is a float64, so the schema was
+62 floating-point fields deep and the integer discipline lived in `assertPaise` and
+in review. A `bigint` column cannot hold a fraction of a paisa, and the check fails
+if any column anywhere can — so the rule this codebase states twice in its own
+comments is now enforced by the database rather than by convention.
+
+### The invariant runs against the *current* implementation
+
+`bun run sql:invariants` builds a small set of ledger entries, computes the balances
+they imply using **`truthFromEntries` from `convex/lib/balances.ts`** — imported
+straight into the check, because its imports are type-only and Node can load it —
+and then asserts the SQL invariant finds nothing. Two implementations, one fixture,
+the same answer. That is an equivalence check rather than a restatement.
+
+Then it corrupts a balance and asserts the invariant *does* find it, names the
+scope, and reports the difference in paise. It also checks the three ways the
+invariant can be wrong in silence: a missing balance row against real entries, a
+balance row with no entries behind it, and a backdated entry moving a year it was
+not dated in.
+
+### Two findings from doing it
+
+**`_creationTime` is load-bearing.** It looked like Convex bookkeeping, and it is
+the paging cursor `lib/balances.ts` walks the whole ledger by, because Convex's own
+`paginate()` could not be re-driven per page. Dropping it while porting would break
+`balances:recomputeAll` — the rebuild that makes the materialised balances
+trustworthy. It is now a real column, with a comment saying why.
+
+**The pure modules use extensionless relative imports.** `lib/arrears.ts` imports
+`"./money"`, which TypeScript, Convex and every bundler accept and Node does not.
+This is a resolver detail rather than a dependency — the target stack resolves them
+the same way the current one does — so it does not change the estimate, but it does
+mean "ports verbatim" is true of the *code* and not of the module resolution. The
+check counts it rather than hiding it.
+
+### What the boundary check is for
+
+`bun run portability` holds the claim that makes the port cheap: no module on the
+domain side of the line may take a runtime dependency on Convex. It keeps an
+explicit manifest of all 18 `lib/` modules, and **fails when a new file is not
+classified**, so the decision about which side a module belongs on is made
+consciously rather than by default. It also loads every pure module in plain Node,
+which is what lets the invariant check import the real implementation.
+
+The current state it reports: 2,170 lines port verbatim across nine modules, one
+module whose logic ports with two type aliases repointed, and 1,266 lines that need
+a transaction.
+
+### What is still not proven
+
+The schema and the boundary are verified. **Nothing about the write path is.**
+Stages 3 and 4 — explicit transactions, and the receipt counter as an atomic
+increment — are unstarted, and they are the stages where a mistake double-counts a
+balance. Stage 0 exists precisely so that when they are attempted, the invariant
+that catches the mistake is already executable.
+
+## 9. What would make this a bad idea
 
 - **Doing it without a runnable deployment.** This tree has no Convex credentials
   and no Docker, so `check`, `smoke`, `measure` and every `visual:*` gate cannot

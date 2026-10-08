@@ -99,6 +99,7 @@ bun run visual:signup   # a new community registers, creates its org, and reache
 bun run visual:import   # a historical CSV is validated, imported, and read back off the dashboard
 bun run visual:ui      # the palette, in both themes, measured for contrast
 bun run visual:recovery # kill the browser mid-run and prove the suite survives
+bun run port       # the port's gates: the SQL schema against convex/schema.ts, the money invariant, and the domain/database boundary (no deployment needed — Postgres runs as WebAssembly)
 ```
 
 `bun run dev` starts **both** halves, because the Convex backend only listens
@@ -231,7 +232,8 @@ Start here, then go deeper:
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Target stack, v2 data model, key design decisions and their rationale |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M8 with scope, exit criteria, and dependencies |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | Payments, receipts, and messaging services |
-| [docs/PORTABILITY.md](docs/PORTABILITY.md) | What porting off Convex would cost, measured — the coupling inventory, the guarantees that must be replaced, and the staged plan |
+| [docs/PORTABILITY.md](docs/PORTABILITY.md) | What porting off Convex would cost, measured — the coupling inventory, the guarantees that must be replaced, and what stages 0–2 already prove |
+| [db/schema.sql](db/schema.sql) | The Convex schema as Postgres DDL, generated. `bun run sql:check` proves it still matches |
 
 ## Repository layout
 

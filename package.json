@@ -27,7 +27,12 @@
     "visual:ui": "node scripts/visual-ui.mjs",
     "visual:recovery": "node scripts/prove-recovery.mjs",
     "icons": "node scripts/make-icons.mjs",
-    "balances:backfill": "node scripts/backfill-bank-years.mjs"
+    "balances:backfill": "node scripts/backfill-bank-years.mjs",
+    "sql:schema": "node scripts/gen-sql-schema.mjs",
+    "sql:check": "node scripts/check-sql-schema.mjs",
+    "sql:invariants": "node scripts/check-sql-invariants.mjs",
+    "portability": "node scripts/check-portable-domain.mjs",
+    "port": "node scripts/check-sql-schema.mjs && node scripts/check-sql-invariants.mjs && node scripts/check-portable-domain.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.95",
@@ -55,6 +60,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^22.10.2",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.18",
