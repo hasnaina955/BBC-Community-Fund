@@ -231,6 +231,7 @@ Start here, then go deeper:
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Target stack, v2 data model, key design decisions and their rationale |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M8 with scope, exit criteria, and dependencies |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | Payments, receipts, and messaging services |
+| [docs/PORTABILITY.md](docs/PORTABILITY.md) | What porting off Convex would cost, measured — the coupling inventory, the guarantees that must be replaced, and the staged plan |
 
 ## Repository layout
 
