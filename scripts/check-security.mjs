@@ -70,8 +70,16 @@ for (const path of [
   "aggregate:directory",
   "aggregate:audit",
   "data:me",
+  "exports:files",
+  "exports:file",
 ]) {
-  const res = await call(path, path === "aggregate:grid" ? { year: 2026 } : {})
+  const args =
+    path === "aggregate:grid"
+      ? { year: 2026 }
+      : path === "exports:file"
+        ? { key: "members" }
+        : {}
+  const res = await call(path, args)
   check(
     `${path} refuses an anonymous caller`,
     res.status === "error" && /Not signed in/i.test(res.errorMessage ?? ""),
@@ -102,6 +110,14 @@ for (const forged of [
 
 const admin = await signIn("secretary@jamaat.org")
 const viewer = await signIn("farhan@jamaat.org")
+
+const viewerExport = await call("exports:file", { key: "ledger" }, viewer)
+check(
+  "a viewer cannot export the books",
+  viewerExport.status === "error" &&
+    /treasurer access required/i.test(viewerExport.errorMessage ?? ""),
+  viewerExport.errorMessage ?? "ALLOWED",
+)
 
 const viewerFund = await call(
   "funds:createFund",
@@ -1226,6 +1242,483 @@ check(
   "a missing value is an empty cell, not the word null",
   parseCsv(toCsv(HOSTILE_COLUMNS, [hostile[2]]))[1]?.[4] === "",
   JSON.stringify(parseCsv(toCsv(HOSTILE_COLUMNS, [hostile[2]]))[1]?.[4]),
+)
+
+/* ------------------------------------------- importing a membership list ----
+ *
+ * M6 added the fourth import kind: the community's roster, which until then had
+ * to be typed in one cousin at a time. Both halves of it are pure functions and
+ * are driven directly here rather than through a deployment:
+ *
+ *   1. `convex/lib/importcsv.ts` — what kind of file this is, and what is wrong
+ *      with it, row by row.
+ *   2. `convex/lib/roster.ts` — whether a row describes somebody the roster
+ *      already has.
+ *
+ * The second is the one worth asserting hardest, because both of its failure
+ * modes look like success: adding everybody twice, and quietly dropping the one
+ * person the treasurer was actually uploading. These are the modules the app
+ * imports, not copies.
+ */
+
+const { parseImport, detectKind } = await import("../convex/lib/importcsv.ts")
+const { planRoster, rosterKeys, isOnRoster, phoneKey } = await import(
+  "../convex/lib/roster.ts",
+)
+
+console.log("\nM6 — a membership list, and who is already on the roster")
+
+/** A parsed member row, as `planRoster` receives it. */
+const memberRow = (row, name, email = null, phone = null) => ({
+  row,
+  name,
+  email,
+  phone,
+  relation: null,
+  joinedYear: null,
+  joinedMonth: null,
+})
+
+/* -- what the file is ---------------------------------------------------- */
+
+check(
+  "a name and an address are recognised as a membership list",
+  detectKind(["name", "email", "phone"]) === "members",
+  `read as ${detectKind(["name", "email", "phone"])}`,
+)
+check(
+  "a membership list is still one with a Joined column, not a ledger",
+  detectKind(["Name", "Joined", "Phone"]) === "members",
+  `read as ${detectKind(["Name", "Joined", "Phone"])} — the ledger signature is any: ["date"]`,
+)
+check(
+  "a contribution grid that also carries a name column is still a grid",
+  detectKind(["name", "member", "year", "month", "amount"]) === "contributions",
+  `read as ${detectKind(["name", "member", "year", "month", "amount"])} — the grid is tested first for exactly this file`,
+)
+check(
+  "a payment register is still a payment register",
+  detectKind(["amount", "paid_at", "method"]) === "payments",
+  `read as ${detectKind(["amount", "paid_at", "method"])}`,
+)
+
+/* -- only a name is required, and a name can contain a comma ------------- */
+
+const rosterCsv = parseImport(
+  'name,email,joined\n"Ali, Mohammad",ali@example.org,09/03/2019\nAyesha Khan,,2019\n',
+)
+check(
+  "a roster needs nothing but a name, so a sheet with no email column works",
+  rosterCsv.issues.length === 0 && rosterCsv.rows.length === 2,
+  `issues: ${JSON.stringify(rosterCsv.issues)}`,
+)
+check(
+  "a name containing a comma is one name, not two columns",
+  rosterCsv.rows[0]?.name === "Ali, Mohammad",
+  JSON.stringify(rosterCsv.rows[0]?.name),
+)
+check(
+  "a joined date gives the year and the month",
+  rosterCsv.rows[0]?.joinedYear === 2019 && rosterCsv.rows[0]?.joinedMonth === 3,
+  JSON.stringify([rosterCsv.rows[0]?.joinedYear, rosterCsv.rows[0]?.joinedMonth]),
+)
+check(
+  "a Joined column holding only a year is a year, not a malformed date",
+  rosterCsv.rows[1]?.joinedYear === 2019 && rosterCsv.rows[1]?.joinedMonth === null,
+  JSON.stringify([rosterCsv.rows[1]?.joinedYear, rosterCsv.rows[1]?.joinedMonth]),
+)
+// A member row cannot store a year outside 2000..2100 (`assertYear`), so a file
+// that says 1995 has to be refused by the *preview*, against the row. Caught at
+// commit time it would fail the entire file with one message about a year.
+const ancientYear = parseImport("name,joined_year\nAyesha Khan,1995\n")
+check(
+  "a join year the member record cannot hold is refused against its own row",
+  ancientYear.issues.length === 1 &&
+    ancientYear.issues[0].field === "joined_year" &&
+    ancientYear.rows.length === 0,
+  JSON.stringify(ancientYear.issues),
+)
+const ancientDate = parseImport("name,joined\nAyesha Khan,01/01/1995\n")
+check(
+  "and the same year written as a date is refused too, against the joined column",
+  ancientDate.issues.length === 1 && ancientDate.issues[0].field === "joined",
+  JSON.stringify(ancientDate.issues),
+)
+
+check(
+  "a row that does not say when somebody joined is not given a date by the parser",
+  parseImport("name\nAyesha Khan\n").rows[0]?.joinedYear === null,
+  "the default depends on the organisation's books, so the parser must not invent one",
+)
+
+/* -- what is wrong with the file, reported by row ------------------------ */
+
+const badEmail = parseImport("name,email\nAyesha Khan,not-an-address\n")
+check(
+  "an address that is not an address is refused, against its own row",
+  badEmail.issues.length === 1 &&
+    badEmail.issues[0].row === 2 &&
+    badEmail.issues[0].field === "email",
+  JSON.stringify(badEmail.issues),
+)
+const shortName = parseImport("name\nX\n")
+check(
+  "a one-character name is refused, as the member form refuses it",
+  shortName.issues.length === 1 && shortName.rows.length === 0,
+  JSON.stringify(shortName.issues),
+)
+const cased = parseImport("name,email\nAyesha Khan,Ayesha@Example.ORG\n")
+check(
+  "an address is lowercased on the way in, because the portal claims on an exact match",
+  cased.rows[0]?.email === "ayesha@example.org",
+  JSON.stringify(cased.rows[0]?.email),
+)
+
+/* -- who the roster already has ------------------------------------------ */
+
+const emptyRoster = rosterKeys([])
+const first = planRoster(
+  [memberRow(2, "Ayesha Khan", "a@example.org"), memberRow(3, "Mohammed Ali")],
+  emptyRoster,
+  [],
+)
+check(
+  "a first import adds everybody",
+  first.usable.length === 2 && first.skipped.length === 0,
+  JSON.stringify({ kept: first.usable.length, skipped: first.skipped }),
+)
+
+const afterImport = rosterKeys([
+  { name: "Ayesha Khan", email: "a@example.org" },
+  { name: "Mohammed Ali" },
+])
+const reRun = planRoster(
+  [memberRow(2, "Ayesha Khan", "a@example.org"), memberRow(3, "Mohammed Ali")],
+  afterImport,
+  [],
+)
+check(
+  "re-importing the same roster adds nobody — a roster is not made safe by a file hash",
+  reRun.usable.length === 0 && reRun.skipped.length === 2,
+  JSON.stringify({ kept: reRun.usable.length, skipped: reRun.skipped }),
+)
+check(
+  "and every skip is named, so nobody disappears without a trace",
+  reRun.skipped.includes("Mohammed Ali") &&
+    reRun.skipped.some((s) => s.includes("a@example.org")),
+  JSON.stringify(reRun.skipped),
+)
+
+const corrected = planRoster(
+  [
+    memberRow(2, "Ayesha Khan", "a@example.org"),
+    memberRow(3, "Mohammed Ali"),
+    memberRow(4, "Bilal Sheikh", "bilal@example.org"),
+  ],
+  afterImport,
+  [],
+)
+check(
+  "a corrected roster adds only the people who are new",
+  corrected.usable.length === 1 && corrected.usable[0].name === "Bilal Sheikh",
+  JSON.stringify(corrected.usable.map((r) => r.name)),
+)
+
+const withPhone = rosterKeys([{ name: "Zoya", phone: "+91 98765 43210" }])
+check(
+  "a phone number matches however it was punctuated",
+  phoneKey("+91 98765-43210") === phoneKey("+919876543210") &&
+    isOnRoster(memberRow(2, "Zoya", null, "+919876543210"), withPhone),
+  `${phoneKey("+91 98765-43210")} vs ${phoneKey("+919876543210")}`,
+)
+check(
+  "a row with no address that matches a member by name is treated as that member",
+  isOnRoster(
+    memberRow(2, "Ali Khan"),
+    rosterKeys([{ name: "Ali Khan", email: "ali@x.org" }]),
+  ),
+  "the row carries nothing that could tell one holder of the name from another",
+)
+
+/* -- two rows that cannot be told apart are refused, not guessed at ------ */
+
+const sameNameIssues = []
+planRoster(
+  [memberRow(2, "Mohammed Ali"), memberRow(5, "Mohammed Ali")],
+  emptyRoster,
+  sameNameIssues,
+)
+check(
+  "two rows with one name and no address to tell them apart are refused",
+  sameNameIssues.length === 1 && sameNameIssues[0].row === 5,
+  JSON.stringify(sameNameIssues),
+)
+check(
+  "and the refusal names the row it clashes with, so the fix is obvious",
+  /row 2/.test(sameNameIssues[0]?.message ?? ""),
+  sameNameIssues[0]?.message,
+)
+
+const sameEmailIssues = []
+planRoster(
+  [memberRow(2, "A", "same@x.org"), memberRow(7, "B", "same@x.org")],
+  emptyRoster,
+  sameEmailIssues,
+)
+check(
+  "two rows sharing an address are refused",
+  sameEmailIssues.length === 1 && sameEmailIssues[0].field === "email",
+  JSON.stringify(sameEmailIssues),
+)
+
+const cousinIssues = []
+const cousins = planRoster(
+  [
+    memberRow(2, "Mohammed Ali", "m1@x.org"),
+    memberRow(3, "Mohammed Ali", "m2@x.org"),
+  ],
+  emptyRoster,
+  cousinIssues,
+)
+check(
+  "two members who share a name but not an address are two people, and both are kept",
+  cousins.usable.length === 2 && cousinIssues.length === 0,
+  JSON.stringify({ kept: cousins.usable.length, issues: cousinIssues }),
+)
+
+/* ------------------------------------------- taking the records away (M6) ---
+ *
+ * The export half of the last M6 item. Three of the eight files it offers are
+ * the *inverse* of the import, and that is a claim worth asserting rather than
+ * believing. `convex/lib/importcsv.ts` says in as many words that "the round trip
+ * is asserted in the check suite" — and until now it was asserted against
+ * `src/lib/csv.ts`'s own reader, not against the parser that reads a treasurer's
+ * file. Those are two different functions, and only one of them is on the path a
+ * real spreadsheet takes.
+ *
+ * So this drives the real pair: the export's column list, through the one CSV
+ * writer, into the import parser. It needs no deployment, which is the point —
+ * the column list is a contract with the import, and a contract that can only be
+ * checked against a backend is one nobody checks.
+ */
+
+const { EXPORT_FILES } = await import("../convex/lib/exportfiles.ts")
+const { COLUMNS } = await import("../convex/lib/importcsv.ts")
+
+/** The columns a kind reads, in the order its template lists them. */
+const importColumns = (kind) => [...COLUMNS[kind].required, ...COLUMNS[kind].optional]
+
+console.log("\nM6 — taking the records away")
+
+/** The screen's own mapping: the file's columns, read off each row by name. */
+const columnsFor = (file) =>
+  file.columns.map((header) => ({ header, value: (row) => row[header] }))
+
+const reImportable = EXPORT_FILES.filter((f) => f.readsBackAs !== null)
+
+check(
+  "the export offers files, and says which can go back in",
+  EXPORT_FILES.length >= 4 && reImportable.length >= 3,
+  `${EXPORT_FILES.length} files, ${reImportable.length} re-importable`,
+)
+check(
+  "every file has its own key and its own filename",
+  new Set(EXPORT_FILES.map((f) => f.key)).size === EXPORT_FILES.length &&
+    new Set(EXPORT_FILES.map((f) => f.filename)).size === EXPORT_FILES.length,
+  EXPORT_FILES.map((f) => f.filename).join(", "),
+)
+check(
+  "a file that cannot be imported says why, so the screen cannot omit it",
+  EXPORT_FILES.filter((f) => f.readsBackAs === null).every(
+    (f) => typeof f.notImportableBecause === "string" && f.notImportableBecause.length > 20,
+  ),
+  EXPORT_FILES.filter((f) => f.readsBackAs === null)
+    .map((f) => `${f.key}: ${f.notImportableBecause}`)
+    .join(" | "),
+)
+
+// The contract with the import, in both directions.
+for (const file of reImportable) {
+  const accepted = importColumns(file.readsBackAs)
+  const required = COLUMNS[file.readsBackAs].required
+  check(
+    `${file.filename} carries every column the ${file.readsBackAs} import requires`,
+    required.every((c) => file.columns.includes(c)),
+    `missing ${required.filter((c) => !file.columns.includes(c)).join(", ") || "nothing"}`,
+  )
+  check(
+    `and writes nothing the ${file.readsBackAs} import would ignore`,
+    file.columns.every((c) => accepted.includes(c)),
+    `not accepted: ${file.columns.filter((c) => !accepted.includes(c)).join(", ") || "none"}`,
+  )
+}
+
+/* -- the round trip, on the real parser ---------------------------------- */
+
+const membersFile = EXPORT_FILES.find((f) => f.key === "members")
+const paymentsFile = EXPORT_FILES.find((f) => f.key === "payments")
+const ledgerFile = EXPORT_FILES.find((f) => f.key === "ledger")
+
+const SAMPLES = {
+  members: {
+    name: "Ali, Mohammad",
+    email: "Ali@Example.ORG",
+    phone: "+91 98765 43210",
+    relation: "Brother",
+    joined_year: 2019,
+    joined_month: 3,
+  },
+  payments: {
+    amount: 150.5,
+    paid_at: "2024-03-09T12:00:00.000Z",
+    member: "Imran Shaikh",
+    fund: "Monthly subscription",
+    bank: "HDFC Bank",
+    method: "cash",
+    receipt: "R-00042",
+    reference: "Imported",
+  },
+  ledger: {
+    // Negative is a debit — the sign is what `postEntry` reads.
+    amount: -1250.5,
+    date: "2024-03-09",
+    fund: "Monthly subscription",
+    bank: "HDFC Bank",
+    member: "Imran Shaikh",
+    category: "other",
+    note: "Bank charges",
+    source: "payment",
+  },
+}
+
+/** Write a file the way the screen writes it, then read it back the way the
+ *  import reads it. */
+function roundTrip(file, row) {
+  const csv = toCsv(columnsFor(file), [row])
+  const parsed = parseImport(csv)
+  return { csv, parsed, row: parsed.rows[0] }
+}
+
+const trips = [
+  [membersFile, SAMPLES.members, roundTrip(membersFile, SAMPLES.members)],
+  [paymentsFile, SAMPLES.payments, roundTrip(paymentsFile, SAMPLES.payments)],
+  [ledgerFile, SAMPLES.ledger, roundTrip(ledgerFile, SAMPLES.ledger)],
+]
+
+for (const [file, , trip] of trips) {
+  check(
+    `${file.filename} is recognised as a ${file.readsBackAs} file when it comes back`,
+    trip.parsed.kind === file.readsBackAs && trip.parsed.issues.length === 0,
+    trip.parsed.kind === file.readsBackAs
+      ? JSON.stringify(trip.parsed.issues)
+      : `read as ${trip.parsed.kind}`,
+  )
+}
+
+const [, , membersTrip] = trips[0]
+const [, , paymentsTrip] = trips[1]
+const [, , ledgerTrip] = trips[2]
+
+check(
+  "a name containing a comma is still one name",
+  membersTrip.row?.name === "Ali, Mohammad",
+  JSON.stringify(membersTrip.row?.name),
+)
+check(
+  "the address is lowercased, which is how the portal claims a record",
+  membersTrip.row?.email === "ali@example.org",
+  JSON.stringify(membersTrip.row?.email),
+)
+check(
+  "the phone number keeps its punctuation and the join date keeps its month",
+  membersTrip.row?.phone === "+91 98765 43210" &&
+    membersTrip.row?.joinedYear === 2019 &&
+    membersTrip.row?.joinedMonth === 3,
+  JSON.stringify([
+    membersTrip.row?.phone,
+    membersTrip.row?.joinedYear,
+    membersTrip.row?.joinedMonth,
+  ]),
+)
+
+check(
+  "a rupee amount with paise arrives as paise, not rounded",
+  paymentsTrip.row?.amountPaise === 15050,
+  JSON.stringify(paymentsTrip.row?.amountPaise),
+)
+check(
+  "the payment date is preserved to the day",
+  paymentsTrip.row?.paidAt === "2024-03-09",
+  JSON.stringify(paymentsTrip.row?.paidAt),
+)
+check(
+  "and the receipt number, the method and the names all survive",
+  paymentsTrip.row?.receipt === "R-00042" &&
+    paymentsTrip.row?.method === "cash" &&
+    paymentsTrip.row?.member === "Imran Shaikh" &&
+    paymentsTrip.row?.fund === "Monthly subscription" &&
+    paymentsTrip.row?.bank === "HDFC Bank",
+  JSON.stringify(paymentsTrip.row),
+)
+
+check(
+  "a ledger debit stays negative, because the sign is the direction",
+  ledgerTrip.row?.amountPaise === -125050,
+  JSON.stringify(ledgerTrip.row?.amountPaise),
+)
+check(
+  "and the entry keeps its category, note and what produced it",
+  ledgerTrip.row?.category === "other" &&
+    ledgerTrip.row?.note === "Bank charges" &&
+    ledgerTrip.row?.source === "payment",
+  JSON.stringify([
+    ledgerTrip.row?.category,
+    ledgerTrip.row?.note,
+    ledgerTrip.row?.source,
+  ]),
+)
+check(
+  "a row that does not say what produced it is an opening balance, as before",
+  parseImport(
+    toCsv(columnsFor(ledgerFile), [{ ...SAMPLES.ledger, source: "" }]),
+  ).rows[0]?.source === "opening",
+  "the default is what makes a spreadsheet of starting balances importable",
+)
+
+/* -- the values that fail quietly --------------------------------------- */
+
+const hostileName = '=HYPERLINK("http://phish.example","Verify")'
+const hostileTrip = roundTrip(membersFile, {
+  name: hostileName,
+  email: "",
+  phone: "",
+  relation: "",
+  joined_year: 2024,
+  joined_month: 1,
+})
+check(
+  "a name a spreadsheet would execute is guarded on the way out",
+  hostileTrip.csv.includes("'=HYPERLINK"),
+  hostileTrip.csv.split("\r\n")[1]?.slice(0, 40),
+)
+check(
+  "and the guard is undone on the way back in, so the name is not corrupted",
+  hostileTrip.row?.name === hostileName,
+  JSON.stringify(hostileTrip.row?.name),
+)
+
+const emptyTrip = roundTrip(membersFile, {
+  name: "Ayesha Khan",
+  email: "",
+  phone: "",
+  relation: "",
+  joined_year: 2024,
+  joined_month: 1,
+})
+check(
+  "an empty cell comes back empty rather than as the word null",
+  emptyTrip.row?.email === null && emptyTrip.row?.phone === null,
+  JSON.stringify({ email: emptyTrip.row?.email, phone: emptyTrip.row?.phone }),
 )
 
 /* ------------------------------------------------------------------ UPI ----

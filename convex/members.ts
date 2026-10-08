@@ -3,6 +3,7 @@ import { v } from "convex/values"
 import { requireTreasurer, assertCanWriteFund } from "./lib/authz"
 import { recordAudit, AUDIT } from "./lib/audit"
 import { assertMonth, assertPaise, assertYear } from "./lib/money"
+import { insertMember } from "./lib/members"
 import { assertHasDues } from "./lib/funds"
 
 /**
@@ -25,32 +26,16 @@ export const createMember = mutation({
   handler: async (ctx, args) => {
     const actor = await requireTreasurer(ctx)
 
-    const name = args.name.trim()
-    if (name.length < 2) throw new Error("Member name must be at least 2 characters")
-    assertYear(args.joinedYear)
-    assertMonth(args.joinedMonth)
-
-    if (args.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(args.email)) {
-      throw new Error("That email address does not look right")
-    }
-
-    const id = await ctx.db.insert("members", {
-      orgId: actor.orgId,
-      name,
-      phone: args.phone?.trim() || undefined,
-      email: args.email?.trim().toLowerCase() || undefined,
-      relation: args.relation?.trim() || undefined,
-      joinedYear: args.joinedYear,
-      joinedMonth: args.joinedMonth,
-      isActive: true,
-      createdAt: Date.now(),
-    })
+    // The row is written by `insertMember`, which the CSV import calls too —
+    // see lib/members.ts. The audit row stays here, because a member added by
+    // hand is one event and a batch of two hundred is another.
+    const id = await insertMember(ctx, actor.orgId, args)
 
     await recordAudit(ctx, actor, {
       action: AUDIT.memberCreated,
       entityType: "member",
       entityId: id,
-      details: name,
+      details: args.name.trim(),
     })
 
     return id

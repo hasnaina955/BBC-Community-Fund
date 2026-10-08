@@ -612,7 +612,137 @@ check(
   `skipped ${again.value?.skipped}`,
 )
 
-/* ------------------------------------------------------- 7. the other org */
+/* ------------------------------------ 7. the roster, and the years it brings */
+
+group("import — a membership list, and the years it brings")
+
+// Three of these rows are the members this community already has, with the same
+// addresses, so they must be skipped rather than added a second time. The other
+// three are new. Sana names a join year in the current one, which is the case
+// that used to make imported history unreachable: the year pickers were derived
+// from member join dates alone, so a roster dated this year hid a 2024 grid.
+const THIS_YEAR = new Date().getFullYear()
+const ROSTER = csv(
+  ["name", "email", "phone", "joined_year"],
+  [
+    ...MEMBERS.map((m) => [m.name, m.email, "", 2024]),
+    ["Sana Kapoor", "sana@example.org", "", THIS_YEAR],
+    ["Yusuf Rahman", "", "", ""],
+    ["Zainab Bibi", "", "+91 98765 43210", ""],
+  ],
+)
+
+currentScreen = "import-roster"
+await page.setInputFiles("#import-file", {
+  name: "membership.csv",
+  mimeType: "text/csv",
+  buffer: Buffer.from(ROSTER, "utf8"),
+})
+
+const rosterReady = await waitForText(page, "Ready to import", 25_000)
+check(
+  "a membership list is recognised and accepted",
+  rosterReady,
+  rosterReady
+    ? ""
+    : (await bodyText(page))
+        .split("\n")
+        .filter((l) => l.includes("row ") || l.includes("cannot be imported"))
+        .slice(0, 5)
+        .join(" | "),
+)
+
+const rosterPreviewText = await bodyText(page)
+check(
+  "the preview calls it a membership list rather than a ledger",
+  has(rosterPreviewText, "Recognised as membership list"),
+  "",
+)
+check(
+  "and names the rows it is leaving alone, so a skip is never silent",
+  has(rosterPreviewText, "already on the roster") &&
+    has(rosterPreviewText, MEMBERS[0].name),
+  rosterPreviewText.split("\n").filter((l) => l.includes("roster")).slice(0, 2).join(" | "),
+)
+await shot(page, "import-roster-preview")
+
+const rosterPreview = await convexCall("imports:previewImport", { text: ROSTER }, jwt)
+check(
+  "the server plans to add exactly the people who are new",
+  rosterPreview.value?.ok === true && rosterPreview.value?.summary?.members === 3,
+  rosterPreview.value?.ok
+    ? `members=${rosterPreview.value?.summary?.members}`
+    : `${(rosterPreview.value?.issues ?? [])
+        .slice(0, 4)
+        .map((i) => `row ${i.row} ${i.field}: ${i.message}`)
+        .join(" | ")}`,
+)
+
+currentScreen = "import-roster-commit"
+await page.getByRole("button", { name: /^Import 3 records/ }).click()
+const rosterDone = await waitForText(page, "records written", 40_000)
+check("the roster import commits", rosterDone, "")
+
+const rosterAfterText = await bodyText(page)
+check(
+  "the screen reports the members it added",
+  has(rosterAfterText, "3 members"),
+  rosterAfterText.split("\n").filter((l) => l.includes("member")).slice(0, 3).join(" / "),
+)
+await shot(page, "import-roster-done")
+
+const roster = (await convexCall("aggregate:members", { filter: "active" }, jwt)).value ?? []
+const byName = new Map(roster.map((m) => [m.name, m]))
+check(
+  "the roster is the three members it had plus the three the file added, and no copies",
+  roster.length === MEMBERS.length + 3,
+  `${roster.length} members: ${roster.map((m) => m.name).join(", ")}`,
+)
+check(
+  "a row that named no join year is dated to the earliest year the books cover",
+  byName.get("Yusuf Rahman")?.joinedYear === 2024,
+  `joined ${byName.get("Yusuf Rahman")?.joinedYear} — the imported contributions are 2024`,
+)
+check(
+  "a row that named one keeps it",
+  byName.get("Sana Kapoor")?.joinedYear === THIS_YEAR,
+  `joined ${byName.get("Sana Kapoor")?.joinedYear}`,
+)
+check(
+  "a row with a phone and no address is imported, because only a name is required",
+  Boolean(byName.get("Zainab Bibi")),
+  "",
+)
+
+// The regression this change had to avoid: the year pickers are what makes the
+// imported grid reachable at all.
+const shellAfterRoster = await convexCall("aggregate:shell", {}, jwt)
+check(
+  "the year picker still reaches 2024, even though a member joined this year",
+  shellAfterRoster.value?.yearRange?.from === 2024,
+  `from ${shellAfterRoster.value?.yearRange?.from} — the pickers would hide the imported grid otherwise`,
+)
+
+// And the identity rule, end to end: the same file again changes nothing.
+const rosterAgain = await convexCall(
+  "imports:runImport",
+  { text: ROSTER, batchKey: sha(ROSTER) },
+  jwt,
+  "mutation",
+)
+check(
+  "importing the same roster twice adds nobody",
+  rosterAgain.value?.ok === true && rosterAgain.value?.imported === 0,
+  `imported ${rosterAgain.value?.imported}, skipped ${rosterAgain.value?.skipped}`,
+)
+const rosterTwice = (await convexCall("aggregate:members", { filter: "active" }, jwt)).value ?? []
+check(
+  "and the roster is unchanged by it",
+  rosterTwice.length === roster.length,
+  `${rosterTwice.length} members`,
+)
+
+/* ------------------------------------------------------- 8. the other org */
 
 group("import — isolation")
 
@@ -670,7 +800,7 @@ const anon = await convexCall(
 )
 check("an anonymous caller cannot even preview", Boolean(anon.error), anon.error?.slice(0, 100))
 
-/* --------------------------------------------------------- 8. clean up */
+/* --------------------------------------------------------- 9. clean up */
 
 group("import — leaving nothing behind")
 

@@ -78,7 +78,8 @@ destinations, and the two are gated separately on the server.
 | Member portal | **Done (M3)** — what I owe, a printable passbook, receipts, mark-as-paid, installable |
 | Collection desk | **Done (M4)** — cash sessions, receipts, and a static UPI QR with the bank details; online collection declined by the committee ([docs/M4-PLAN.md](docs/M4-PLAN.md)) |
 | Reminders and arrears | **Built, unsent (M5)** — the defaulter list with ageing, the run that is recorded rather than looped, and the consent rules; the send is a seam with no vendor behind it |
-| Verified in a browser | **Done** — 273 console checks + 82 portal checks + 30 contrast checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
+| Importing a community | **Done for records (M6)** — signup and first-run setup, a membership list and the history, through one screen that previews every problem in a file before it writes. Three of the files the community can download are the inverse of that import. An org switcher and per-org settings are not built |
+| Verified in a browser | **Done** — 273 console checks + 82 portal checks + 30 contrast checks + 35 signup checks + 62 import checks ([docs/VISUAL-VERIFICATION.md](docs/VISUAL-VERIFICATION.md)) |
 | Data | **Done (M1)** — seeded: 1 org, 7 staff, 3 banks, 6 funds, 84 members |
 | Online collection | **Closed by decision, 2026-09-29** — the committee declined it. This product records money; it does not take it. Members pay into BBC's bank from their own UPI app using a QR drawn in the browser, then tell the treasurer |
 
@@ -89,7 +90,7 @@ bun install
 bun run dev        # Convex backend + Vite together, http://localhost:5173
 bun run typecheck  # tsc -b --noEmit, app + convex
 bun run build      # typecheck + production build into dist/
-bun run check      # 139 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions, the CSV export, the static UPI QR, cross-org isolation
+bun run check      # 190 assertions: authz, the mode rule, the balance invariant, the receipt sequence, the reminder decisions, the CSV export, the static UPI QR, the membership-list import, the data export round trip, cross-org isolation
 bun run smoke      # all 37 read models return against the seeded data
 bun run measure    # payload per screen, against history
 bun run visual     # every console screen in a real browser, against real data
@@ -98,6 +99,7 @@ bun run visual:signup   # a new community registers, creates its org, and reache
 bun run visual:import   # a historical CSV is validated, imported, and read back off the dashboard
 bun run visual:ui      # the palette, in both themes, measured for contrast
 bun run visual:recovery # kill the browser mid-run and prove the suite survives
+bun run port       # the port's gates: the SQL schema against convex/schema.ts, the money invariant, and the domain/database boundary (no deployment needed — Postgres runs as WebAssembly)
 ```
 
 `bun run dev` starts **both** halves, because the Convex backend only listens
@@ -230,6 +232,8 @@ Start here, then go deeper:
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Target stack, v2 data model, key design decisions and their rationale |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M8 with scope, exit criteria, and dependencies |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | Payments, receipts, and messaging services |
+| [docs/PORTABILITY.md](docs/PORTABILITY.md) | What porting off Convex would cost, measured — the coupling inventory, the guarantees that must be replaced, and what stages 0–2 already prove |
+| [db/schema.sql](db/schema.sql) | The Convex schema as Postgres DDL, generated. `bun run sql:check` proves it still matches |
 
 ## Repository layout
 

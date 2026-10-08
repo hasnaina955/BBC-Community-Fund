@@ -33,7 +33,7 @@
  * Column contracts
  * -------------------------------------------------------------------------- */
 
-export type ImportKind = "contributions" | "payments" | "ledger"
+export type ImportKind = "members" | "contributions" | "payments" | "ledger"
 
 /**
  * How each kind is recognised.
@@ -46,6 +46,13 @@ export type ImportKind = "contributions" | "payments" | "ledger"
  */
 const SIGNATURES: Array<{ kind: ImportKind; any?: string[]; all?: string[] }> = [
   { kind: "contributions", all: ["year", "month"] },
+  // Second, and not first. A contribution grid exported from a spreadsheet
+  // carries a `name` column as well as `member`, so the grid has to win that
+  // collision. It is tested before `ledger` for the opposite reason: the
+  // ledger signature is `any: ["date"]`, loose enough that a member list with
+  // a `joined` column — the normal shape of one — would be read as a ledger
+  // and then refused for having no `amount`.
+  { kind: "members", all: ["name"] },
   { kind: "payments", all: ["method"] },
   { kind: "payments", any: ["receipt", "paid_at"] },
   { kind: "ledger", any: ["date", "effective_date"] },
@@ -53,6 +60,13 @@ const SIGNATURES: Array<{ kind: ImportKind; any?: string[]; all?: string[] }> = 
 
 /** Every column each kind understands. Unknown columns are ignored, not fatal. */
 export const COLUMNS: Record<ImportKind, { required: string[]; optional: string[] }> = {
+  // Only a name is required, and that is the point of this kind existing: the
+  // treasurer whose spreadsheet has no email column is the case that made
+  // member import worth building, so nothing else may be required.
+  members: {
+    required: ["name"],
+    optional: ["email", "phone", "relation", "joined_year", "joined_month", "joined"],
+  },
   contributions: {
     required: ["member", "year", "month", "amount"],
     optional: ["fund", "status", "paid_at", "note"],
@@ -255,20 +269,21 @@ export function parseMonth(
   raw: string,
   row: number,
   issues: ImportIssue[],
+  field = "month",
 ): number | null {
   const text = raw.trim().toLowerCase().replace(/\.$/, "")
   if (/^\d+$/.test(text)) {
     const n = Number(text)
     if (n >= 1 && n <= 12) return n
-    issues.push({ row, field: "month", message: `month "${raw}" is not 1–12` })
+    issues.push({ row, field, message: `${field} "${raw}" is not 1–12` })
     return null
   }
   const named = MONTH_NAMES[text]
   if (named !== undefined) return named
   issues.push({
     row,
-    field: "month",
-    message: `month "${raw}" is not a month — use 1–12, or a name like Mar`,
+    field,
+    message: `${field} "${raw}" is not a month — use 1–12, or a name like Mar`,
   })
   return null
 }
@@ -368,13 +383,14 @@ function parseYear(
   raw: string,
   row: number,
   issues: ImportIssue[],
+  field = "year",
 ): number | null {
   const y = Number(raw.trim())
   if (!/^\d{4}$/.test(raw.trim()) || y < 1900 || y > 2200) {
     issues.push({
       row,
-      field: "year",
-      message: `year "${raw}" is not a four-digit year`,
+      field,
+      message: `${field} "${raw}" is not a four-digit year`,
     })
     return null
   }
@@ -409,6 +425,29 @@ function parseEnum<T extends string>(
  * Row shapes
  * -------------------------------------------------------------------------- */
 
+/**
+ * A row of a membership list.
+ *
+ * `joinedYear` and `joinedMonth` are nullable because a membership list is
+ * not required to say when anyone joined, and it usually does not. Null means
+ * "the file did not say" and is deliberately not defaulted here: the only
+ * sensible fallback depends on what the organisation already has on its
+ * books, and this file has no database to ask. See `planMembers` in
+ * `convex/imports.ts`.
+ */
+export interface MemberRow {
+  row: number
+  name: string
+  email: string | null
+  phone: string | null
+  relation: string | null
+  joinedYear: number | null
+  joinedMonth: number | null
+}
+
+/** The same shape `createMember` accepts, so an imported member is valid. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 export interface ContributionRow {
   row: number
   member: string
@@ -442,11 +481,27 @@ export interface LedgerRow {
   amountPaise: number
   date: string
   category: string | null
+  source: (typeof LEDGER_SOURCES)[number]
   note: string | null
 }
 
 const CONTRIBUTION_STATUS = ["due", "paid", "partial", "waived"] as const
 const PAYMENT_METHOD = ["cash", "cheque", "upi", "card", "transfer"] as const
+/**
+ * What produced an entry, matching the schema. The import used to ignore this
+ * column and stamp every row `opening`, which was a column the contract
+ * advertised and the parser dropped — so a round trip turned a payment into an
+ * opening balance. `opening` stays the default, because importing a
+ * community's starting position is what this file is for.
+ */
+const LEDGER_SOURCES = [
+  "opening",
+  "transaction",
+  "payment",
+  "correction",
+  "transfer",
+] as const
+
 const LEDGER_CATEGORIES = [
   "operations",
   "emergency",
@@ -503,7 +558,7 @@ export function missingColumns(headers: string[]): string[] {
  */
 export function parseImport(
   text: string,
-): ParseOutcome<ContributionRow | PaymentRow | LedgerRow> {
+): ParseOutcome<MemberRow | ContributionRow | PaymentRow | LedgerRow> {
   const issues: ImportIssue[] = []
   const records = tokenise(text)
   const read = readHeader(records)
@@ -542,11 +597,89 @@ export function parseImport(
   const get = (record: string[], column: string): string =>
     cell(record[index.get(column) ?? -1])
 
-  const rows: Array<ContributionRow | PaymentRow | LedgerRow> = []
+  const rows: Array<MemberRow | ContributionRow | PaymentRow | LedgerRow> = []
 
   dataRows.forEach((record, i) => {
     // +2: one for the header, one because rows are 1-based for humans.
     const row = i + 2
+
+    if (kind === "members") {
+      const name = get(record, "name").trim()
+      // The same floor `createMember` applies, so a name this parser accepts
+      // is a name the ordinary writer would also have accepted.
+      if (name.length < 2) {
+        issues.push({
+          row,
+          field: "name",
+          message: name === "" ? "name is empty" : `"${name}" is too short to be a name`,
+        })
+        return
+      }
+      const emailRaw = get(record, "email").trim()
+      const email = emailRaw === "" ? null : emailRaw.toLowerCase()
+      if (email && !EMAIL_RE.test(email)) {
+        issues.push({
+          row,
+          field: "email",
+          message: `"${emailRaw}" is not an email address`,
+        })
+        return
+      }
+
+      // A `joined` date is the normal shape of a membership list, and
+      // `joined_year`/`joined_month` are what the grid and the app use. Both
+      // are read, and the explicit year or month wins over the date, because
+      // a column that says one thing specifically beats one that says it
+      // among other things.
+      const joinedRaw = get(record, "joined")
+      const joinedYearRaw = get(record, "joined_year")
+      const joinedMonthRaw = get(record, "joined_month")
+      let joinedYear = joinedYearRaw
+        ? parseYear(joinedYearRaw, row, issues, "joined_year")
+        : null
+      let joinedMonth = joinedMonthRaw
+        ? parseMonth(joinedMonthRaw, row, issues, "joined_month")
+        : null
+      if (joinedRaw) {
+        // A `Joined` column holding only `2019` is a year, not a malformed
+        // date, and refusing the whole file over it would be pedantry — the
+        // month is simply unknown, which `joinedMonth: null` already means.
+        if (/^\d{4}$/.test(joinedRaw.trim())) {
+          if (joinedYear === null) {
+            joinedYear = parseYear(joinedRaw, row, issues, "joined")
+          }
+        } else {
+          const date = parseDate(joinedRaw, row, "joined", issues)
+          if (!date) return
+          if (joinedYear === null) joinedYear = Number(date.slice(0, 4))
+          if (joinedMonth === null) joinedMonth = Number(date.slice(5, 7))
+        }
+      }
+
+      // A member row cannot store a year outside 2000..2100 — `assertYear`
+      // in lib/money.ts refuses it on the way in. It is caught here, where it
+      // is reported against the row, rather than at commit time, where it
+      // would fail the entire file with a single message about a year.
+      if (joinedYear !== null && (joinedYear < 2000 || joinedYear > 2100)) {
+        issues.push({
+          row,
+          field: joinedYearRaw ? "joined_year" : "joined",
+          message: `a member cannot join in ${joinedYear} — the member record holds a year between 2000 and 2100`,
+        })
+        return
+      }
+
+      rows.push({
+        row,
+        name,
+        email,
+        phone: get(record, "phone").trim() || null,
+        relation: get(record, "relation").trim() || null,
+        joinedYear,
+        joinedMonth,
+      })
+      return
+    }
 
     if (kind === "contributions") {
       const member = get(record, "member")
@@ -639,6 +772,14 @@ export function parseImport(
       issues,
       "other",
     )
+    const source = parseEnum(
+      get(record, "source"),
+      LEDGER_SOURCES,
+      row,
+      "source",
+      issues,
+      "opening",
+    )
     const fund = get(record, "fund") || null
     const bank = get(record, "bank") || null
     const member = get(record, "member") || null
@@ -649,7 +790,7 @@ export function parseImport(
         message: "name a fund, a bank account or a member — an entry with no target moves no balance",
       })
     }
-    if (amountPaise === null || !date || !category) return
+    if (amountPaise === null || !date || !category || !source) return
     if (amountPaise === 0) {
       issues.push({ row, field: "amount", message: "a ledger entry cannot be zero" })
       return
@@ -662,6 +803,7 @@ export function parseImport(
       amountPaise,
       date,
       category,
+      source,
       note: get(record, "note") || null,
     })
   })

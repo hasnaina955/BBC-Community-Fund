@@ -1,4 +1,5 @@
 import { useQuery } from "convex/react"
+import type { ExportKey } from "../../convex/lib/exportfiles"
 import { api } from "../../convex/_generated/api"
 import type { Id } from "../../convex/_generated/dataModel"
 import { yearsInRange } from "@/data/period"
@@ -219,4 +220,29 @@ export function useAccountStatus() {
 /** Cash collected offline that members have claimed, waiting to be confirmed. */
 export function usePaymentRequests() {
   return useQuery(api.portal.requestsQueue)
+}
+
+/* ------------------------------------------------------------ data export */
+
+/**
+ * What a community can take away with it.
+ *
+ * A few strings per file and no rows, so the Settings screen costs nothing to
+ * open however long the books are. The rows are fetched only when a file is
+ * actually asked for — see `useExportFile`.
+ */
+export function useExportFiles() {
+  return useQuery(api.exports.files)
+}
+
+/**
+ * One file's rows, or nothing until a key is given.
+ *
+ * `skip` until the treasurer presses a button, because this is the one query in
+ * the app that returns history by design — that is what an export is — and it
+ * must not run to render a screen. This is the same idiom the import screen uses
+ * for its preview.
+ */
+export function useExportFile(key: ExportKey | null) {
+  return useQuery(api.exports.file, key ? { key } : "skip")
 }

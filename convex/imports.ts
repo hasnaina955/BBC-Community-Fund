@@ -7,9 +7,13 @@ import { recordAudit } from "./lib/audit"
 import { hasDues, modeOf } from "./lib/funds"
 import { postEntry } from "./lib/ledger"
 import { recordPaymentFor } from "./lib/collection"
+import { insertMember } from "./lib/members"
+import { planRoster, rosterKeys, type RosterKeys } from "./lib/roster"
+import { earliestYearOnRecord } from "./lib/years"
 import {
   parseImport,
   type ImportIssue,
+  type MemberRow,
   type ContributionRow,
   type PaymentRow,
   type LedgerRow,
@@ -65,6 +69,17 @@ interface RefMaps {
   byEmail: Map<string, Id<"members">>
   /** Lowercased name -> member ids, because two people share a name. */
   byName: Map<string, Id<"members">[]>
+  /**
+   * The roster reduced to what a spreadsheet row can be matched on. Only the
+   * membership list reads it; the money kinds match a row to a member by
+   * name or email, which is what `byEmail`/`byName` above are for.
+   */
+  roster: RosterKeys
+  /**
+   * The earliest year this organisation has any record of, used as the join
+   * year for a roster row that does not name one.
+   */
+  earliestYear: number
   fundByName: Map<string, Id<"funds">>
   bankByName: Map<string, Id<"banks">>
   /** The fund used when a row does not name one. */
@@ -119,12 +134,23 @@ async function loadRefs(
   return {
     byEmail,
     byName,
+    roster: rosterKeys(members),
     fundByName,
     bankByName,
     defaultFund: dueFund ? dueFund._id : null,
     memberCount: members.length,
+    // Passed the roster we just read, so this costs two point lookups and
+    // not a second read of the membership.
+    //
+    // Floored at 2000 because that is the earliest year a member row can
+    // hold (`assertYear`), and an organisation whose *books* reach further
+    // back would otherwise be handed a join year the member record refuses —
+    // failing the whole roster over a date nobody typed. The floor is applied
+    // here, once, so the year the warning names is the year that is stored.
+    earliestYear: Math.max(await earliestYearOnRecord(ctx, orgId, members), 2000),
   }
 }
+
 
 function resolveMember(
   refs: RefMaps,
@@ -335,6 +361,94 @@ function planLedger(
   }
 }
 
+/* -------------------------------------------------------------- membership */
+
+interface MemberPlan {
+  row: MemberRow
+  joinedYear: number
+  joinedMonth: number
+}
+
+/** How many skipped names are listed before the warning is summarised. */
+const MAX_SKIPPED_NAMED = 8
+
+/**
+ * Plan a membership list.
+ *
+ * ## A roster is made safe to re-run by identity, not by hashing the file
+ *
+ * The other three kinds derive an idempotency key from a hash of the uploaded
+ * file, which is right for a ledger: the same bytes describe the same money.
+ * A roster is not like that. A treasurer who corrects one address and uploads
+ * the file again has uploaded *different bytes describing the same people*, and
+ * a hash would add a second copy of every one of them. So a row is matched
+ * against the existing roster by identity — email, else phone, else name — and
+ * a match is skipped: re-uploading the same roster is a no-op, and a corrected
+ * one adds only the people who are new. The rules themselves live in
+ * `lib/roster.ts`, where the check suite can drive them with real
+ * spreadsheets and no deployment.
+ *
+ * The limit of that is worth stating plainly, because it is not nothing. A row
+ * whose *identity* changed is somebody the roster has never met as far as this
+ * can tell: rename a member who has no email and no phone, and re-uploading the
+ * file adds them a second time. That is not a gap to close with guesswork —
+ * two members called "Mohammed Ali" are two members, and no rule can tell a
+ * rename from a new cousin. It is instead reported: every skip is named in the
+ * warnings, so the treasurer can see exactly what the file did.
+ *
+ * ## This import only ever adds
+ *
+ * It does not edit, reactivate or delete an existing member. A spreadsheet
+ * column that has been quietly reworded is not evidence about a person, and
+ * overwriting a phone number from a stale file is the kind of change nobody
+ * notices until a reminder goes to the wrong place. Corrections are made on
+ * the Members screen.
+ */
+function planMembers(
+  refs: RefMaps,
+  rows: MemberRow[],
+  issues: ImportIssue[],
+): { plans: MemberPlan[]; warnings: string[]; skipped: string[] } {
+  const warnings: string[] = []
+  const { usable, skipped } = planRoster(rows, refs.roster, issues)
+
+  const plans = usable.map((row) => ({
+    row,
+    // A file that names only a year is read as January of it: the earliest
+    // month it could be, so a member owes from the start of the year rather
+    // than from a month nobody chose. A file that names nothing gets the
+    // earliest year the organisation has any record of, so an imported roster
+    // is not dated later than the books it belongs to.
+    joinedYear: row.joinedYear ?? refs.earliestYear,
+    joinedMonth: row.joinedMonth ?? 1,
+  }))
+
+  if (skipped.length > 0) {
+    const named = skipped.slice(0, MAX_SKIPPED_NAMED).join(", ")
+    warnings.push(
+      `${skipped.length} of ${rows.length} rows are already on the roster and were left alone: ${named}` +
+        (skipped.length > MAX_SKIPPED_NAMED
+          ? `, and ${skipped.length - MAX_SKIPPED_NAMED} more`
+          : "") +
+        ". This import only adds members; it never edits one, so a correction to an existing member is made on the Members screen.",
+    )
+  }
+
+  const undated = plans.filter((p) => p.row.joinedYear === null)
+  if (undated.length > 0) {
+    warnings.push(
+      `${undated.length} row${undated.length === 1 ? "" : "s"} do not say when the member joined, so they are recorded as joining in ${refs.earliestYear}. If your records go back further than that, add a joined_year column — a month before a member's join date cannot be entered for them by hand.`,
+    )
+  }
+
+  if (plans.length > 0 && plans.every((p) => !p.row.email)) {
+    warnings.push(
+      "None of these rows have an email address. A member claims their own record in the portal by matching the email on it, so none of them can sign in to see their dues until an address is added on the Members screen.",
+    )
+  }
+
+  return { plans, warnings, skipped }
+}
 /* ------------------------------------------------------------------ preview */
 
 const fileArgs = { text: v.string() } as const
@@ -383,12 +497,16 @@ export const previewImport = query({
 
     const refs = await loadRefs(ctx, actor.orgId)
     const issues = [...parsed.issues]
-    const rows = parsed.rows as Array<ContributionRow | PaymentRow | LedgerRow>
+    const rows = parsed.rows as Array<MemberRow | ContributionRow | PaymentRow | LedgerRow>
 
     let summary: Record<string, number> = {}
     let warnings: string[] = []
 
-    if (parsed.kind === "contributions") {
+    if (parsed.kind === "members") {
+      const planned = planMembers(refs, rows as MemberRow[], issues)
+      summary = { members: planned.plans.length }
+      warnings = planned.warnings
+    } else if (parsed.kind === "contributions") {
       const { plans, warnings: w } = await planContributions(
         ctx,
         actor.orgId,
@@ -468,7 +586,56 @@ export const runImport = mutation({
 
     const refs = await loadRefs(ctx, actor.orgId)
     const issues = [...parsed.issues]
-    const rows = parsed.rows as Array<ContributionRow | PaymentRow | LedgerRow>
+    const rows = parsed.rows as Array<MemberRow | ContributionRow | PaymentRow | LedgerRow>
+
+    /* -------------------- members: add, and never edit -------------------- */
+
+    if (parsed.kind === "members") {
+      const { plans, warnings, skipped } = planMembers(
+        refs,
+        rows as MemberRow[],
+        issues,
+      )
+      if (issues.length > 0) return refuse(issues)
+
+      let created = 0
+      for (const plan of plans) {
+        // Through `insertMember`, the same writer `members.createMember` uses,
+        // so an imported member is a member the rest of the app already knows
+        // how to validate and read. Nothing is patched: see planMembers.
+        await insertMember(ctx, actor.orgId, {
+          name: plan.row.name,
+          phone: plan.row.phone ?? undefined,
+          email: plan.row.email ?? undefined,
+          relation: plan.row.relation ?? undefined,
+          joinedYear: plan.joinedYear,
+          joinedMonth: plan.joinedMonth,
+        })
+        created += 1
+      }
+
+      await recordAudit(ctx, actor, {
+        action: "import.members",
+        entityType: "import",
+        details:
+          `${created} members` +
+          (skipped.length > 0
+            ? `; ${skipped.length} already on the roster`
+            : ""),
+      })
+
+      return {
+        ok: true as const,
+        imported: created,
+        members: created,
+        contributions: 0,
+        payments: 0,
+        skipped: skipped.length,
+        issues: [] as ImportIssue[],
+        warnings,
+        receiptRange: null,
+      }
+    }
 
     /* ---- contributions: grid first, then replay the paid ones as payments -- */
 
@@ -590,6 +757,7 @@ export const runImport = mutation({
       return {
         ok: true as const,
         imported: contributionsWritten + paymentsWritten,
+        members: 0,
         contributions: contributionsWritten,
         payments: paymentsWritten,
         skipped,
@@ -645,6 +813,7 @@ export const runImport = mutation({
       return {
         ok: true as const,
         imported: paymentsWritten,
+        members: 0,
         contributions: 0,
         payments: paymentsWritten,
         skipped,
@@ -698,7 +867,12 @@ export const runImport = mutation({
         // stamps everything today produces a passbook with eight years of
         // movements on one day, which is the opposite of what was asked for.
         effectiveDate: plan.row.date,
-        source: "opening",
+        // What the file says the entry was. This used to be `"opening"` for
+        // every row, which meant a re-imported payment arrived relabelled as an
+        // opening balance — a column the contract advertised and the parser
+        // silently dropped. `opening` is still the default for a row that does
+        // not say, which is the case this import exists for.
+        source: plan.row.source,
         refType: "import",
         refId,
         note: plan.row.note ?? "Imported from the community's records",
@@ -724,6 +898,7 @@ export const runImport = mutation({
     return {
       ok: true as const,
       imported: written,
+      members: 0,
       contributions: 0,
       payments: 0,
       skipped,

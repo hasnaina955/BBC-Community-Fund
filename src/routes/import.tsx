@@ -50,12 +50,15 @@ type RunResult = Awaited<
 type Issue = { row: number; field: string; message: string }
 
 const KIND_LABEL: Record<string, string> = {
+  members: "Membership list",
   contributions: "Contribution grid",
   payments: "Payments received",
   ledger: "Ledger entries",
 }
 
 const KIND_BLURB: Record<string, string> = {
+  members:
+    "Who your members are. Only a name is required — a spreadsheet with no email column is the case this is for. It adds people and never edits one, and anybody already on the roster is skipped by name, so importing the same list twice changes nothing.",
   contributions:
     "A row per member per month — what they were charged and whether they paid. Paid months are imported by replaying a payment for each, oldest first, exactly as entering them by hand would.",
   payments:
@@ -118,10 +121,22 @@ export default function ImportData() {
   const shown = issues.slice(0, MAX_PREVIEW_ROWS)
   const hidden = issues.length - shown.length
 
-  const downloadTemplate = (kind: "contributions" | "payments" | "ledger") => {
+  const downloadTemplate = (
+    kind: "members" | "contributions" | "payments" | "ledger",
+  ) => {
     if (!columns) return
     const spec = columns[kind]
     const sample: Record<string, string | number> = {
+      // Membership columns. `joined_year`/`joined_month` are the ones the
+      // grid and the app use; `joined` is the date column a spreadsheet
+      // usually has, and either spelling is accepted.
+      name: "Ayesha Khan",
+      email: "ayesha@example.org",
+      phone: "+91 98765 43210",
+      relation: "Sister",
+      joined_year: 2019,
+      joined_month: 3,
+      joined: "",
       member: kind === "ledger" ? "Imran Shaikh" : "Ayesha Khan",
       fund: "Monthly subscription",
       bank: kind === "payments" ? "HDFC Bank" : "",
@@ -254,8 +269,8 @@ export default function ImportData() {
           {columns === undefined ? (
             <ReadModelLoader label="Loading the column reference" />
           ) : (
-            <div className="grid gap-3 sm:grid-cols-3">
-              {(["contributions", "payments", "ledger"] as const).map((kind) => (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {(["members", "contributions", "payments", "ledger"] as const).map((kind) => (
                 <div key={kind} className="rounded-lg border p-3">
                   <p className="text-sm font-medium">{KIND_LABEL[kind]}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -297,8 +312,14 @@ export default function ImportData() {
             </li>
             <li>
               <span className="font-medium text-foreground">Members</span> are
-              matched by email first, then by name. Two members sharing a name is
-              refused with a request to use the email address instead.
+              matched by email first, then by phone, then by name. Two rows that
+              nothing can tell apart are refused; a row that matches somebody
+              already on the roster is skipped and named in the report below.
+            </li>
+            <li>
+              A <span className="font-medium text-foreground">membership list</span>{" "}
+              only ever adds people. It never edits an existing member — a
+              correction is made on the Members screen.
             </li>
             <li>
               Every problem in the file is reported at once, by row, and{" "}
@@ -335,6 +356,9 @@ export default function ImportData() {
           <CardContent className="space-y-3">
             {result.ok ? (
               <div className="flex flex-wrap gap-2 text-sm">
+                {"members" in result && result.members > 0 ? (
+                  <Badge variant="secondary">{result.members} members</Badge>
+                ) : null}
                 {"contributions" in result && result.contributions > 0 ? (
                   <Badge variant="secondary">
                     {result.contributions} contributions
